@@ -5,10 +5,17 @@ from __future__ import annotations
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 from oscar import config
-from oscar.window_control import build_launch_command, normalize_app_name
+from oscar.window_control import (
+    app_window_exists,
+    build_launch_command,
+    focus_app_window,
+    get_active_window_info,
+    normalize_app_name,
+)
 
 SUPPORTED_ACTIONS = {
     "click",
@@ -19,6 +26,7 @@ SUPPORTED_ACTIONS = {
     "hotkey",
     "press",
     "open_app",
+    "close_app",
     "save_file",
     "screenshot",
     "wait",
@@ -144,8 +152,11 @@ def validate_action(
     if action_name == "press":
         normalized["key"] = _normalize_key_name(_require_non_empty_string(action, "key"))
 
-    if action_name == "open_app":
+    if action_name in {"open_app", "close_app"}:
         normalized["app_name"] = normalize_app_name(_require_non_empty_string(action, "app_name"))
+
+    if action_name == "open_app":
+        normalized["new_instance"] = _require_bool(action, "new_instance", default=False)
         profile_name = action.get("profile_name")
         if profile_name is not None:
             if not isinstance(profile_name, str) or not profile_name.strip():
@@ -177,7 +188,7 @@ def validate_action(
         normalized["seconds"] = seconds
 
     if normalized["task_complete"] and action_name != "done":
-        raise ActionValidationError("task_complete can only be true when action is 'done'.")
+        normalized["task_complete"] = False
 
     if action_name == "done" and not normalized["task_complete"]:
         raise ActionValidationError("The 'done' action must set task_complete to true.")
@@ -197,8 +208,19 @@ def execute_action(action: dict[str, Any]) -> None:
         return
 
     if action_name == "open_app":
+        app_name = action["app_name"]
+        should_focus_existing = (
+            not action.get("new_instance")
+            and not action.get("profile_name")
+            and not action.get("url")
+            and app_window_exists(app_name)
+        )
+        if should_focus_existing and focus_app_window(app_name, timeout=config.WINDOW_FOCUS_TIMEOUT):
+            time.sleep(config.FOCUS_SETTLE_DELAY)
+            return
+
         command, _spec = build_launch_command(
-            action["app_name"],
+            app_name,
             profile_name=action.get("profile_name"),
             url=action.get("url"),
         )
@@ -209,10 +231,24 @@ def execute_action(action: dict[str, Any]) -> None:
                 stderr=subprocess.DEVNULL,
             )
         except OSError as exc:
-            raise ActionValidationError(f"Failed to open app '{action['app_name']}': {exc}") from exc
+            raise ActionValidationError(f"Failed to open app '{app_name}': {exc}") from exc
         return
 
     pyautogui = _get_pyautogui()
+
+    if action_name == "close_app":
+        app_name = action["app_name"]
+        if not app_window_exists(app_name):
+            return
+        if not focus_app_window(app_name, timeout=config.WINDOW_FOCUS_TIMEOUT):
+            active_window = get_active_window_info()
+            raise ActionValidationError(
+                f"Failed to focus '{app_name}' before closing; active window is "
+                f"'{active_window.get('title') or 'Unknown'}' ({active_window.get('process_name') or 'Unknown'})."
+            )
+        time.sleep(config.FOCUS_SETTLE_DELAY)
+        pyautogui.hotkey("alt", "f4")
+        return
 
     if action_name == "click":
         pyautogui.click(x=action["x"], y=action["y"])
@@ -239,11 +275,19 @@ def execute_action(action: dict[str, Any]) -> None:
         return
 
     if action_name == "save_file":
+        file_path = Path(action["file_path"]).expanduser()
+        try:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ActionValidationError(
+                f"Failed to prepare save directory '{file_path.parent}': {exc}"
+            ) from exc
+
         pyautogui.hotkey("ctrl", "s")
         time.sleep(config.SAVE_DIALOG_DELAY)
         pyautogui.hotkey("ctrl", "a")
         time.sleep(config.ACTION_DELAY)
-        pyautogui.typewrite(action["file_path"], interval=config.TYPEWRITE_INTERVAL)
+        pyautogui.typewrite(str(file_path), interval=config.TYPEWRITE_INTERVAL)
         time.sleep(config.ACTION_DELAY)
         pyautogui.press("enter")
         return

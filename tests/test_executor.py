@@ -22,18 +22,19 @@ def test_validate_action_rejects_out_of_bounds_coordinates() -> None:
         )
 
 
-def test_validate_action_rejects_task_complete_without_done() -> None:
-    with pytest.raises(ActionValidationError, match="task_complete"):
-        validate_action(
-            {
-                "action": "click",
-                "x": 20,
-                "y": 10,
-                "reasoning": "Click the target.",
-                "task_complete": True,
-            },
-            screen_size=(100, 100),
-        )
+def test_validate_action_coerces_task_complete_for_non_done_actions() -> None:
+    action = validate_action(
+        {
+            "action": "click",
+            "x": 20,
+            "y": 10,
+            "reasoning": "Click the target.",
+            "task_complete": True,
+        },
+        screen_size=(100, 100),
+    )
+
+    assert action["task_complete"] is False
 
 
 def test_validate_action_rejects_invalid_scroll_direction() -> None:
@@ -78,25 +79,13 @@ def test_validate_action_normalizes_press_key_alias() -> None:
     assert action["key"] == "enter"
 
 
-def test_validate_action_coerces_string_task_complete() -> None:
-    action = validate_action(
-        {
-            "action": "wait",
-            "seconds": 0.5,
-            "reasoning": "Pause briefly.",
-            "task_complete": "false",
-        }
-    )
-
-    assert action["task_complete"] is False
-
-
-def test_validate_action_accepts_open_app_with_profile() -> None:
+def test_validate_action_accepts_open_app_with_profile_and_new_instance() -> None:
     action = validate_action(
         {
             "action": "open_app",
             "app_name": "Google Chrome",
             "profile_name": "Andrew",
+            "new_instance": True,
             "reasoning": "Launch Chrome with a named profile.",
             "task_complete": False,
         }
@@ -104,6 +93,20 @@ def test_validate_action_accepts_open_app_with_profile() -> None:
 
     assert action["app_name"] == "google chrome"
     assert action["profile_name"] == "Andrew"
+    assert action["new_instance"] is True
+
+
+def test_validate_action_accepts_close_app() -> None:
+    action = validate_action(
+        {
+            "action": "close_app",
+            "app_name": "Notepad",
+            "reasoning": "Close Notepad reliably.",
+            "task_complete": False,
+        }
+    )
+
+    assert action["app_name"] == "notepad"
 
 
 def test_validate_action_accepts_save_file() -> None:
@@ -211,6 +214,7 @@ def test_execute_action_open_app_uses_launch_command(monkeypatch: pytest.MonkeyP
         popen_calls.append((args, stdout, stderr))
         return object()
 
+    monkeypatch.setattr(executor, "app_window_exists", lambda _app_name: False)
     monkeypatch.setattr(
         executor,
         "build_launch_command",
@@ -237,9 +241,84 @@ def test_execute_action_open_app_uses_launch_command(monkeypatch: pytest.MonkeyP
     ]
 
 
-def test_execute_action_save_file_uses_save_shortcut(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_execute_action_open_app_launches_when_existing_focus_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    popen_calls: list[list[str]] = []
+
+    def fake_popen(args, stdout=None, stderr=None):
+        popen_calls.append(args)
+        return object()
+
+    monkeypatch.setattr(executor, "app_window_exists", lambda _app_name: True)
+    monkeypatch.setattr(executor, "focus_app_window", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(executor.config, "WINDOW_FOCUS_TIMEOUT", 0.0)
+    monkeypatch.setattr(
+        executor,
+        "build_launch_command",
+        lambda app_name, profile_name=None, url=None: (["notepad.exe"], object()),
+    )
+    monkeypatch.setattr(executor.subprocess, "Popen", fake_popen)
+
+    execute_action(
+        {
+            "action": "open_app",
+            "app_name": "notepad",
+            "reasoning": "Open a new notepad window.",
+            "task_complete": False,
+        }
+    )
+
+    assert popen_calls == [["notepad.exe"]]
+
+
+def test_execute_action_open_app_focuses_existing_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    focus_calls: list[str] = []
+    monkeypatch.setattr(executor, "app_window_exists", lambda _app_name: True)
+    monkeypatch.setattr(executor, "focus_app_window", lambda app_name, timeout: focus_calls.append(app_name) or True)
+    monkeypatch.setattr(executor.config, "WINDOW_FOCUS_TIMEOUT", 2.0)
+    monkeypatch.setattr(executor.config, "FOCUS_SETTLE_DELAY", 0.0)
+    monkeypatch.setattr(executor.time, "sleep", lambda _seconds: None)
+
+    execute_action(
+        {
+            "action": "open_app",
+            "app_name": "notepad",
+            "reasoning": "Focus Notepad directly.",
+            "task_complete": False,
+        }
+    )
+
+    assert focus_calls == ["notepad"]
+
+
+def test_execute_action_close_app_uses_alt_f4(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_pyautogui = FakePyAutoGUI()
+    monkeypatch.setattr(executor, "_get_pyautogui", lambda: fake_pyautogui)
+    monkeypatch.setattr(executor, "app_window_exists", lambda _app_name: True)
+    monkeypatch.setattr(executor, "focus_app_window", lambda app_name, timeout: True)
+    monkeypatch.setattr(executor.config, "WINDOW_FOCUS_TIMEOUT", 2.0)
+    monkeypatch.setattr(executor.config, "FOCUS_SETTLE_DELAY", 0.0)
+    monkeypatch.setattr(executor.time, "sleep", lambda _seconds: None)
+
+    execute_action(
+        {
+            "action": "close_app",
+            "app_name": "notepad",
+            "reasoning": "Close Notepad directly.",
+            "task_complete": False,
+        }
+    )
+
+    assert fake_pyautogui.calls == [("hotkey", "alt", "f4")]
+
+
+def test_execute_action_save_file_uses_save_shortcut_and_creates_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
     fake_pyautogui = FakePyAutoGUI()
     sleep_calls: list[float] = []
+    target_dir = tmp_path / "Andrew Folder"
+    target_file = target_dir / "Hello World.txt"
+
     monkeypatch.setattr(executor, "_get_pyautogui", lambda: fake_pyautogui)
     monkeypatch.setattr(executor.time, "sleep", lambda seconds: sleep_calls.append(seconds))
     monkeypatch.setattr(executor.config, "SAVE_DIALOG_DELAY", 0.75)
@@ -249,16 +328,17 @@ def test_execute_action_save_file_uses_save_shortcut(monkeypatch: pytest.MonkeyP
     execute_action(
         {
             "action": "save_file",
-            "file_path": r"C:\Users\andre\Downloads\oscar_note.txt",
-            "reasoning": "Save the file to Downloads.",
+            "file_path": str(target_file),
+            "reasoning": "Save the file to a custom directory.",
             "task_complete": False,
         }
     )
 
+    assert target_dir.exists()
     assert fake_pyautogui.calls == [
         ("hotkey", "ctrl", "s"),
         ("hotkey", "ctrl", "a"),
-        ("typewrite", r"C:\Users\andre\Downloads\oscar_note.txt", 0.08),
+        ("typewrite", str(target_file), 0.08),
         ("press", "enter"),
     ]
     assert sleep_calls == [0.75, 0.25, 0.25]

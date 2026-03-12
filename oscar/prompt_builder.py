@@ -13,20 +13,24 @@ You will be given:
 
 Your job is to decide the SINGLE NEXT ACTION to take to progress toward the goal.
 Always choose the most reliable action available.
-Prefer open_app for launching applications directly instead of clicking search UI.
+Prefer open_app for launching or refocusing applications directly instead of clicking search UI.
+Prefer open_app with url for browser searches or navigation instead of typing into the address bar when possible.
+Prefer close_app over mouse clicks when the task is to close a window.
 Prefer press and hotkey actions over coordinate clicks when a keyboard shortcut can do the job.
+Use press for keys like enter, tab, escape, up, down, left, and right when keyboard navigation is more reliable than clicking.
 Prefer save_file when a plain text file must be saved to a specific path.
-For Chrome or browser tasks, prefer open_app with profile_name when a named profile is requested.
-If multiple apps are requested, open them one at a time with open_app and avoid reopening apps that are already open.
+For Chrome tasks, prefer open_app with profile_name when a named profile is requested.
+If multiple apps are requested, open them one at a time and avoid reopening apps that are already open.
 Before typing or sending hotkeys, make sure the intended app is focused based on the active window/process information.
 If a previous action did not visibly change the screen, switch strategy instead of repeating it.
+Do not click Chrome profile tiles or Save As sidebar folders when open_app or save_file can achieve the same result more reliably.
 Always respond ONLY in valid JSON matching the schema provided.
 Never include explanation outside the JSON block.
 When the task is fully complete, set task_complete to true with action: done.
 Be precise with coordinates and only use mouse actions when the target truly requires pointing."""
 
 ACTION_SCHEMA = """{
-  "action": "click" | "double_click" | "right_click" | "type" | "scroll" | "hotkey" | "press" | "open_app" | "save_file" | "screenshot" | "wait" | "done",
+  "action": "click" | "double_click" | "right_click" | "type" | "scroll" | "hotkey" | "press" | "open_app" | "close_app" | "save_file" | "screenshot" | "wait" | "done",
   "x": 500,
   "y": 300,
   "text": "hello",
@@ -35,7 +39,7 @@ ACTION_SCHEMA = """{
   "app_name": "notepad",
   "profile_name": "Andrew",
   "url": "https://github.com",
-  "file_path": "C:\\\\Users\\\\andre\\\\Downloads\\\\oscar_note.txt",
+  "file_path": "C:\\\\Users\\\\andre\\\\Desktop\\\\Hello World.txt",
   "direction": "down",
   "amount": 3,
   "seconds": 1.0,
@@ -107,12 +111,16 @@ def build_prompt(
             rendered_history,
             "",
             "Reliability rules:",
-            "- Prefer open_app to launch apps like Notepad, Calculator, Chrome, Edge, Explorer, Task Manager, PowerShell, or VS Code.",
+            "- Prefer open_app to launch or refocus apps like Notepad, Calculator, Chrome, Edge, Explorer, Task Manager, PowerShell, VS Code, Brave, or Firefox.",
             "- Prefer open_app with profile_name for named Chrome profiles instead of clicking the profile picker.",
+            "- Prefer open_app with url for browser searches or navigation instead of typing into the address bar when possible.",
+            "- Prefer close_app when the user asks to close a window.",
             "- Prefer press or hotkey for Start/Search, Enter, Tab, Escape, Alt+Tab, Win shortcuts, and menu navigation.",
+            "- Use press with up/down/left/right or tab/enter when keyboard navigation is safer than a mouse click.",
             "- Prefer save_file when saving a plain text document to a concrete path is the next step.",
             "- Only type when the intended app is focused based on the active window and process context.",
             "- If multiple apps are requested, open them one at a time and do not reopen windows that are already open.",
+            "- Do not click Chrome profile tiles or Save As sidebar folders when a deterministic action can avoid that click.",
             "- If the last action failed or the screen did not change, choose a different action instead of repeating the same click.",
             "",
             "Return one JSON object only. Follow this schema exactly:",

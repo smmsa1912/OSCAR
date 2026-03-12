@@ -4,6 +4,7 @@ from oscar.window_control import (
     build_launch_command,
     resolve_app_spec,
     resolve_chrome_profile_directory,
+    resolve_default_chrome_profile_directory,
 )
 
 
@@ -18,6 +19,21 @@ def test_resolve_app_spec_fuzzy_matches_common_typo() -> None:
     spec = resolve_app_spec("file exploror")
 
     assert spec.canonical_name == "file explorer"
+
+
+def test_resolve_default_chrome_profile_directory_prefers_last_used() -> None:
+    profile_directory = resolve_default_chrome_profile_directory(
+        local_state_data={
+            "profile": {
+                "last_used": "Profile 3",
+                "info_cache": {
+                    "Default": {"name": "Andrew"},
+                },
+            }
+        }
+    )
+
+    assert profile_directory == "Profile 3"
 
 
 def test_build_launch_command_uses_resolved_known_executable(monkeypatch) -> None:
@@ -56,6 +72,26 @@ def test_resolve_chrome_profile_directory_matches_display_name() -> None:
     )
 
     assert profile_directory == "Default"
+
+
+def test_build_launch_command_includes_default_chrome_profile(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "oscar.window_control._resolve_launch_target",
+        lambda spec: r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    )
+    monkeypatch.setattr(
+        "oscar.window_control.resolve_default_chrome_profile_directory",
+        lambda **kwargs: "Default",
+    )
+
+    command, spec = build_launch_command("chrome", url="https://github.com")
+
+    assert spec.canonical_name == "chrome"
+    assert command == [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        "--profile-directory=Default",
+        "https://github.com",
+    ]
 
 
 def test_build_launch_command_includes_chrome_profile_when_available(monkeypatch) -> None:

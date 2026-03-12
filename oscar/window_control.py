@@ -10,6 +10,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -67,11 +68,37 @@ _KNOWN_APP_SPECS = [
         supports_url=True,
     ),
     AppSpec(
+        canonical_name="brave",
+        command=("brave.exe",),
+        process_names=("brave.exe",),
+        title_keywords=("brave",),
+        aliases=("brave browser",),
+        launch_candidates=(
+            r"%ProgramFiles%\BraveSoftware\Brave-Browser\Application\brave.exe",
+            r"%LocalAppData%\BraveSoftware\Brave-Browser\Application\brave.exe",
+            "brave.exe",
+        ),
+        supports_url=True,
+    ),
+    AppSpec(
+        canonical_name="firefox",
+        command=("firefox.exe",),
+        process_names=("firefox.exe",),
+        title_keywords=("firefox",),
+        aliases=("mozilla firefox",),
+        launch_candidates=(
+            r"%ProgramFiles%\Mozilla Firefox\firefox.exe",
+            r"%ProgramFiles(x86)%\Mozilla Firefox\firefox.exe",
+            "firefox.exe",
+        ),
+        supports_url=True,
+    ),
+    AppSpec(
         canonical_name="file explorer",
         command=("explorer.exe",),
         process_names=("explorer.exe",),
         title_keywords=("file explorer", "explorer"),
-        aliases=("explorer", "windows explorer", "file exploror", "exploror"),
+        aliases=("explorer", "windows explorer", "file exploror", "exploror", "file manager"),
         launch_candidates=(r"%SystemRoot%\explorer.exe", "explorer.exe"),
     ),
     AppSpec(
@@ -79,7 +106,7 @@ _KNOWN_APP_SPECS = [
         command=("taskmgr.exe",),
         process_names=("taskmgr.exe",),
         title_keywords=("task manager",),
-        aliases=("taskmanager", "task manger"),
+        aliases=("taskmanager", "task manger", "taskmgr"),
         launch_candidates=(r"%SystemRoot%\System32\taskmgr.exe", "taskmgr.exe"),
     ),
     AppSpec(
@@ -141,6 +168,36 @@ _KNOWN_APP_SPECS = [
             "code",
         ),
     ),
+    AppSpec(
+        canonical_name="spotify",
+        command=("spotify.exe",),
+        process_names=("spotify.exe",),
+        title_keywords=("spotify",),
+        aliases=(),
+        launch_candidates=(r"%ProgramFiles%\Spotify\Spotify.exe", r"%ProgramFiles(x86)%\Spotify\Spotify.exe", "spotify.exe"),
+    ),
+    AppSpec(
+        canonical_name="discord",
+        command=("discord.exe",),
+        process_names=("discord.exe",),
+        title_keywords=("discord",),
+        aliases=(),
+        launch_candidates=(r"%LocalAppData%\Discord\app-*\discord.exe", "discord.exe"),
+    ),  
+    AppSpec(
+        canonical_name="microdift edge",
+        command=("msedge.exe",),
+        process_names=("msedge.exe",),
+        title_keywords=("microsoft edge", "edge"),
+        aliases=("edge",),
+        launch_candidates=(
+            r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe",
+            r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe",
+            r"%LocalAppData%\Microsoft\Edge\Application\msedge.exe",
+            "msedge.exe",
+        ),
+        supports_url=True,
+    )
 ]
 
 _ALIASES: dict[str, AppSpec] = {}
@@ -163,8 +220,7 @@ KNOWN_APP_NAMES = sorted({spec.canonical_name for spec in _KNOWN_APP_SPECS})
 def normalize_app_name(app_name: str) -> str:
     """Normalize a free-form app name for matching."""
 
-    lowered = " ".join(app_name.strip().split()).strip(" .,\t").lower()
-    return lowered
+    return " ".join(app_name.strip().split()).strip(" .,\t").lower()
 
 
 def _fuzzy_match_alias(app_name: str) -> AppSpec | None:
@@ -214,10 +270,41 @@ def chrome_local_state_path() -> Path:
     return local_app_data / "Google" / "Chrome" / "User Data" / "Local State"
 
 
+def _load_json_file(path: Path) -> dict[str, Any] | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def resolve_default_chrome_profile_directory(
+    *,
+    local_state_data: dict[str, Any] | None = None,
+    local_state_path: Path | None = None,
+) -> str | None:
+    """Return Chrome's most likely default profile directory."""
+
+    data = local_state_data or _load_json_file(local_state_path or chrome_local_state_path())
+    if not data:
+        return None
+
+    profile_section = data.get("profile", {})
+    last_used = profile_section.get("last_used")
+    if isinstance(last_used, str) and last_used.strip():
+        return last_used.strip()
+
+    info_cache = profile_section.get("info_cache", {})
+    if "Default" in info_cache:
+        return "Default"
+    if info_cache:
+        return next(iter(info_cache))
+    return None
+
+
 def resolve_chrome_profile_directory(
     profile_name: str,
     *,
-    local_state_data: dict | None = None,
+    local_state_data: dict[str, Any] | None = None,
     local_state_path: Path | None = None,
 ) -> str | None:
     """Resolve a Chrome display profile name to its profile directory."""
@@ -226,13 +313,9 @@ def resolve_chrome_profile_directory(
     if not wanted:
         return None
 
-    data = local_state_data
-    if data is None:
-        path = local_state_path or chrome_local_state_path()
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return None
+    data = local_state_data or _load_json_file(local_state_path or chrome_local_state_path())
+    if not data:
+        return None
 
     info_cache = data.get("profile", {}).get("info_cache", {})
     exact_matches: list[str] = []
@@ -287,15 +370,23 @@ def build_launch_command(
     spec = resolve_app_spec(app_name)
     executable = _resolve_launch_target(spec) or spec.command[0]
 
-    if spec.canonical_name in {"chrome", "microsoft edge"}:
+    if spec.canonical_name == "chrome":
+        command = [executable]
+        profile_directory = None
+        if profile_name:
+            profile_directory = resolve_chrome_profile_directory(profile_name) or profile_name.strip()
+        else:
+            profile_directory = resolve_default_chrome_profile_directory()
+        if profile_directory:
+            command.append(f"--profile-directory={profile_directory}")
+        if url:
+            command.append(url)
+        return command, spec
+
+    if spec.canonical_name == "microsoft edge":
         command = [executable]
         if profile_name:
-            profile_directory = profile_name.strip()
-            if spec.canonical_name == "chrome":
-                resolved_profile = resolve_chrome_profile_directory(profile_name)
-                if resolved_profile is not None:
-                    profile_directory = resolved_profile
-            command.append(f"--profile-directory={profile_directory}")
+            command.append(f"--profile-directory={profile_name.strip()}")
         if url:
             command.append(url)
         return command, spec
