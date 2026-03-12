@@ -7,6 +7,9 @@ import sys
 import time
 from typing import Any
 
+from oscar import config
+from oscar.window_control import build_launch_command, normalize_app_name
+
 SUPPORTED_ACTIONS = {
     "click",
     "double_click",
@@ -16,6 +19,7 @@ SUPPORTED_ACTIONS = {
     "hotkey",
     "press",
     "open_app",
+    "save_file",
     "screenshot",
     "wait",
     "done",
@@ -48,24 +52,6 @@ def _get_pyautogui():
 def _normalize_key_name(key: str) -> str:
     cleaned_key = key.strip().lower()
     return KEY_ALIASES.get(cleaned_key, cleaned_key)
-
-
-def _open_app(app_name: str) -> None:
-    try:
-        if sys.platform == "win32":
-            subprocess.Popen(
-                ["cmd", "/c", "start", "", app_name],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        else:
-            subprocess.Popen(
-                [app_name],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-    except OSError as exc:
-        raise ActionValidationError(f"Failed to open app '{app_name}': {exc}") from exc
 
 
 def _require_non_empty_string(action: dict[str, Any], key: str) -> str:
@@ -159,7 +145,20 @@ def validate_action(
         normalized["key"] = _normalize_key_name(_require_non_empty_string(action, "key"))
 
     if action_name == "open_app":
-        normalized["app_name"] = _require_non_empty_string(action, "app_name")
+        normalized["app_name"] = normalize_app_name(_require_non_empty_string(action, "app_name"))
+        profile_name = action.get("profile_name")
+        if profile_name is not None:
+            if not isinstance(profile_name, str) or not profile_name.strip():
+                raise ActionValidationError("Action field 'profile_name' must be a non-empty string.")
+            normalized["profile_name"] = profile_name.strip()
+        url = action.get("url")
+        if url is not None:
+            if not isinstance(url, str) or not url.strip():
+                raise ActionValidationError("Action field 'url' must be a non-empty string.")
+            normalized["url"] = url.strip()
+
+    if action_name == "save_file":
+        normalized["file_path"] = _require_non_empty_string(action, "file_path")
 
     if action_name == "scroll":
         direction = _require_non_empty_string(action, "direction").lower()
@@ -198,7 +197,19 @@ def execute_action(action: dict[str, Any]) -> None:
         return
 
     if action_name == "open_app":
-        _open_app(action["app_name"])
+        command, _spec = build_launch_command(
+            action["app_name"],
+            profile_name=action.get("profile_name"),
+            url=action.get("url"),
+        )
+        try:
+            subprocess.Popen(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            raise ActionValidationError(f"Failed to open app '{action['app_name']}': {exc}") from exc
         return
 
     pyautogui = _get_pyautogui()
@@ -216,7 +227,7 @@ def execute_action(action: dict[str, Any]) -> None:
         return
 
     if action_name == "type":
-        pyautogui.typewrite(action["text"], interval=0.05)
+        pyautogui.typewrite(action["text"], interval=config.TYPEWRITE_INTERVAL)
         return
 
     if action_name == "hotkey":
@@ -225,6 +236,16 @@ def execute_action(action: dict[str, Any]) -> None:
 
     if action_name == "press":
         pyautogui.press(action["key"])
+        return
+
+    if action_name == "save_file":
+        pyautogui.hotkey("ctrl", "s")
+        time.sleep(config.SAVE_DIALOG_DELAY)
+        pyautogui.hotkey("ctrl", "a")
+        time.sleep(config.ACTION_DELAY)
+        pyautogui.typewrite(action["file_path"], interval=config.TYPEWRITE_INTERVAL)
+        time.sleep(config.ACTION_DELAY)
+        pyautogui.press("enter")
         return
 
     if action_name == "scroll":

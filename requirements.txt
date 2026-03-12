@@ -4,3 +4,6 @@ pyautogui
 Pillow
 mss
 python-dotenv
+PyGetWindow
+psutil
+pywin32

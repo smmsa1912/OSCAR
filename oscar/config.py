@@ -89,6 +89,10 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-
 MAX_STEPS = _parse_int("MAX_STEPS", 20)
 ACTION_DELAY = _parse_float("ACTION_DELAY", 0.5)
 APP_LAUNCH_DELAY = _parse_float("APP_LAUNCH_DELAY", 1.5)
+WINDOW_FOCUS_TIMEOUT = _parse_float("WINDOW_FOCUS_TIMEOUT", 2.0)
+SAVE_DIALOG_DELAY = _parse_float("SAVE_DIALOG_DELAY", 0.75)
+FOCUS_SETTLE_DELAY = _parse_float("FOCUS_SETTLE_DELAY", 0.35)
+TYPEWRITE_INTERVAL = _parse_float("TYPEWRITE_INTERVAL", 0.07)
 SCREENSHOT_REGION = _parse_region(os.getenv("SCREENSHOT_REGION"))
 
 _enable_windows_dpi_awareness()
