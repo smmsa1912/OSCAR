@@ -9,6 +9,11 @@ def test_system_prompt_mentions_focus_and_reliability_rules() -> None:
     assert "Prefer close_app" in SYSTEM_PROMPT
     assert "open_app with url" in SYSTEM_PROMPT
     assert "up, down, left, and right" in SYSTEM_PROMPT
+    assert "coordinate grid overlay" in SYSTEM_PROMPT
+    assert "Do not claim that an app is open" in SYSTEM_PROMPT
+    assert "Prefer terminal_command" in SYSTEM_PROMPT
+    assert "Prefer uia_click" in SYSTEM_PROMPT
+    assert "exact provided user-specific folder paths" in SYSTEM_PROMPT
 
 
 def test_build_prompt_includes_context_history_schema_and_rules() -> None:
@@ -18,6 +23,7 @@ def test_build_prompt_includes_context_history_schema_and_rules() -> None:
             "app_name": "notepad",
             "reasoning": "Launch Notepad directly.",
             "task_complete": False,
+            "launch_confirmed": False,
         }
     ]
 
@@ -30,6 +36,8 @@ def test_build_prompt_includes_context_history_schema_and_rules() -> None:
         active_window_title="Untitled - Notepad",
         active_process_name="notepad.exe",
         cursor_position=(640, 480),
+        known_paths={"downloads": r"C:\Users\andre\Downloads", "desktop": r"C:\Users\andre\Desktop"},
+        ui_controls=[{"text": "OK", "automation_id": "CommandButton_6", "control_type": "Button"}],
     )
 
     assert "Open Notepad and type Hello" in prompt
@@ -39,7 +47,16 @@ def test_build_prompt_includes_context_history_schema_and_rules() -> None:
     assert "Active process: notepad.exe." in prompt
     assert "Current cursor position: (640, 480)." in prompt
     assert '"action": "open_app"' in prompt
-    assert '"action": "click" | "double_click" | "right_click" | "type" | "scroll" | "hotkey" | "press" | "open_app" | "close_app" | "save_file"' in ACTION_SCHEMA
+    assert '"terminal_command"' in ACTION_SCHEMA
+    assert '"uia_click"' in ACTION_SCHEMA
     assert ACTION_SCHEMA in prompt
     assert "Prefer open_app with profile_name" in prompt
-    assert "Use press with up/down/left/right" in prompt
+    assert "Prefer uia_click" in prompt
+    assert "coordinate grid overlay" in prompt
+    assert "Do not claim that an app is open" in prompt
+    assert "Prefer terminal_command" in prompt
+    assert "Exact user-specific folder paths:" in prompt
+    assert r"C:\\Users\\andre\\Downloads" in prompt
+    assert '"automation_id": "CommandButton_6"' in prompt
+    assert "Recent execution note:" in prompt
+

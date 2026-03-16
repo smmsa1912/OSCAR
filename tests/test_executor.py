@@ -290,6 +290,33 @@ def test_execute_action_open_app_focuses_existing_window(monkeypatch: pytest.Mon
     assert focus_calls == ["notepad"]
 
 
+def test_execute_action_open_app_uses_shortcut_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_pyautogui = FakePyAutoGUI()
+    popen_calls: list[list[str]] = []
+    shortcut_spec = type("ShortcutSpec", (), {"shortcut_keys": ("winleft", "i")})()
+
+    monkeypatch.setattr(executor, "_get_pyautogui", lambda: fake_pyautogui)
+    monkeypatch.setattr(executor, "app_window_exists", lambda _app_name: False)
+    monkeypatch.setattr(
+        executor,
+        "build_launch_command",
+        lambda app_name, profile_name=None, url=None: (["cmd.exe", "/c", "start", "", "ms-settings:"], shortcut_spec),
+    )
+    monkeypatch.setattr(executor.subprocess, "Popen", lambda args, stdout=None, stderr=None: popen_calls.append(args))
+
+    execute_action(
+        {
+            "action": "open_app",
+            "app_name": "settings",
+            "reasoning": "Open Settings with its Windows shortcut.",
+            "task_complete": False,
+        }
+    )
+
+    assert fake_pyautogui.calls == [("hotkey", "winleft", "i")]
+    assert popen_calls == []
+
+
 def test_execute_action_close_app_uses_alt_f4(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_pyautogui = FakePyAutoGUI()
     monkeypatch.setattr(executor, "_get_pyautogui", lambda: fake_pyautogui)
@@ -358,3 +385,148 @@ def test_execute_action_wait_uses_time_sleep(monkeypatch: pytest.MonkeyPatch) ->
     )
 
     assert sleep_calls == [1.5]
+
+
+
+def test_validate_action_accepts_terminal_command() -> None:
+    action = validate_action(
+        {
+            "action": "terminal_command",
+            "command": "Get-ChildItem .",
+            "working_directory": r"C:\Users\andre",
+            "reasoning": "List files through the terminal.",
+            "task_complete": False,
+        }
+    )
+
+    assert action["command"] == "Get-ChildItem ."
+    assert action["working_directory"] == r"C:\Users\andre"
+
+
+def test_execute_action_terminal_command_returns_output(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    completed = subprocess.CompletedProcess(
+        args=["powershell.exe", "-Command", "Get-ChildItem ."],
+        returncode=0,
+        stdout="alpha\nbeta\n",
+        stderr="",
+    )
+    run_calls: list[dict[str, object]] = []
+
+    def fake_run(args, stdout=None, stderr=None, text=None, cwd=None, timeout=None, check=None):
+        run_calls.append(
+            {
+                "args": args,
+                "cwd": cwd,
+                "timeout": timeout,
+                "check": check,
+            }
+        )
+        return completed
+
+    monkeypatch.setattr(executor, "_build_terminal_invocation", lambda command: ["powershell.exe", "-Command", command])
+    monkeypatch.setattr(executor.subprocess, "run", fake_run)
+    monkeypatch.setattr(executor.config, "TERMINAL_TIMEOUT_SECONDS", 12.0)
+    monkeypatch.setattr(executor.config, "TERMINAL_OUTPUT_LIMIT", 200)
+
+    result = execute_action(
+        {
+            "action": "terminal_command",
+            "command": "Get-ChildItem .",
+            "working_directory": str(tmp_path),
+            "reasoning": "List files through the terminal.",
+            "task_complete": False,
+        }
+    )
+
+    assert result == {
+        "command": "Get-ChildItem .",
+        "command_exit_code": 0,
+        "command_stdout": "alpha\nbeta",
+        "command_stderr": "",
+        "execution_confirmed": True,
+    }
+    assert run_calls == [
+        {
+            "args": ["powershell.exe", "-Command", "Get-ChildItem ."],
+            "cwd": str(tmp_path),
+            "timeout": 12.0,
+            "check": False,
+        }
+    ]
+
+
+def test_validate_action_accepts_uia_click() -> None:
+    action = validate_action(
+        {
+            "action": "uia_click",
+            "target_text": "OK",
+            "control_type": "Button",
+            "reasoning": "Click the labeled OK button through UI Automation.",
+            "task_complete": False,
+        }
+    )
+
+    assert action["target_text"] == "OK"
+    assert action["control_type"] == "Button"
+
+
+def test_execute_action_uia_click_uses_ui_automation(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        executor,
+        "click_active_window_control",
+        lambda **kwargs: calls.append(kwargs) or True,
+    )
+
+    result = execute_action(
+        {
+            "action": "uia_click",
+            "target_text": "OK",
+            "control_type": "Button",
+            "reasoning": "Click the labeled OK button through UI Automation.",
+            "task_complete": False,
+        }
+    )
+
+    assert result is None
+    assert calls == [{"target_text": "OK", "control_type": "Button", "automation_id": None}]
+
+
+def test_execute_action_terminal_command_rewrites_known_user_folder(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    completed = subprocess.CompletedProcess(
+        args=["powershell.exe", "-Command", "Get-ChildItem ."],
+        returncode=0,
+        stdout="done\n",
+        stderr="",
+    )
+    run_calls: list[dict[str, object]] = []
+
+    def fake_run(args, stdout=None, stderr=None, text=None, cwd=None, timeout=None, check=None):
+        run_calls.append({"args": args, "cwd": cwd})
+        return completed
+
+    monkeypatch.setattr(executor, "_build_terminal_invocation", lambda command: ["powershell.exe", "-Command", command])
+    monkeypatch.setattr(executor.subprocess, "run", fake_run)
+    monkeypatch.setattr(executor, "rewrite_known_user_paths", lambda value: value.replace(r"C:\Users\Andrew\Downloads", str(tmp_path)))
+
+    execute_action(
+        {
+            "action": "terminal_command",
+            "command": r"Remove-Item 'C:\Users\Andrew\Downloads\Hello World.txt'",
+            "working_directory": r"C:\Users\Andrew\Downloads",
+            "reasoning": "Delete the file through PowerShell.",
+            "task_complete": False,
+        }
+    )
+
+    assert run_calls == [
+        {
+            "args": ["powershell.exe", "-Command", f"Remove-Item '{tmp_path}\\Hello World.txt'"],
+            "cwd": str(tmp_path),
+        }
+    ]
+
+
+
+

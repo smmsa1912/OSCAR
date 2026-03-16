@@ -7,3 +7,5 @@ python-dotenv
 PyGetWindow
 psutil
 pywin32
+pywinauto
+

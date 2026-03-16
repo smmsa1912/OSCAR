@@ -25,6 +25,7 @@ class AppSpec:
     launch_candidates: tuple[str, ...] = ()
     supports_profile: bool = False
     supports_url: bool = False
+    shortcut_keys: tuple[str, ...] = ()
     is_known: bool = True
 
 
@@ -100,6 +101,16 @@ _KNOWN_APP_SPECS = [
         title_keywords=("file explorer", "explorer"),
         aliases=("explorer", "windows explorer", "file exploror", "exploror", "file manager"),
         launch_candidates=(r"%SystemRoot%\explorer.exe", "explorer.exe"),
+        shortcut_keys=("winleft", "e"),
+    ),
+    AppSpec(
+        canonical_name="settings",
+        command=("cmd.exe", "/c", "start", "", "ms-settings:"),
+        process_names=("systemsettings.exe",),
+        title_keywords=("settings",),
+        aliases=("setting", "windows settings", "settings app"),
+        launch_candidates=(r"%SystemRoot%\System32\cmd.exe", "cmd.exe"),
+        shortcut_keys=("winleft", "i"),
     ),
     AppSpec(
         canonical_name="task manager",
@@ -108,6 +119,7 @@ _KNOWN_APP_SPECS = [
         title_keywords=("task manager",),
         aliases=("taskmanager", "task manger", "taskmgr"),
         launch_candidates=(r"%SystemRoot%\System32\taskmgr.exe", "taskmgr.exe"),
+        shortcut_keys=("ctrl", "shift", "esc"),
     ),
     AppSpec(
         canonical_name="calculator",
@@ -168,36 +180,6 @@ _KNOWN_APP_SPECS = [
             "code",
         ),
     ),
-    AppSpec(
-        canonical_name="spotify",
-        command=("spotify.exe",),
-        process_names=("spotify.exe",),
-        title_keywords=("spotify",),
-        aliases=(),
-        launch_candidates=(r"%ProgramFiles%\Spotify\Spotify.exe", r"%ProgramFiles(x86)%\Spotify\Spotify.exe", "spotify.exe"),
-    ),
-    AppSpec(
-        canonical_name="discord",
-        command=("discord.exe",),
-        process_names=("discord.exe",),
-        title_keywords=("discord",),
-        aliases=(),
-        launch_candidates=(r"%LocalAppData%\Discord\app-*\discord.exe", "discord.exe"),
-    ),  
-    AppSpec(
-        canonical_name="microdift edge",
-        command=("msedge.exe",),
-        process_names=("msedge.exe",),
-        title_keywords=("microsoft edge", "edge"),
-        aliases=("edge",),
-        launch_candidates=(
-            r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe",
-            r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe",
-            r"%LocalAppData%\Microsoft\Edge\Application\msedge.exe",
-            "msedge.exe",
-        ),
-        supports_url=True,
-    )
 ]
 
 _ALIASES: dict[str, AppSpec] = {}
@@ -215,6 +197,8 @@ for spec in _KNOWN_APP_SPECS:
 
 
 KNOWN_APP_NAMES = sorted({spec.canonical_name for spec in _KNOWN_APP_SPECS})
+GUEST_PROFILE_NAMES = {"guest", "guest mode"}
+INCOGNITO_PROFILE_NAMES = {"incognito", "private", "private mode", "inprivate", "in private"}
 
 
 def normalize_app_name(app_name: str) -> str:
@@ -372,20 +356,31 @@ def build_launch_command(
 
     if spec.canonical_name == "chrome":
         command = [executable]
-        profile_directory = None
-        if profile_name:
-            profile_directory = resolve_chrome_profile_directory(profile_name) or profile_name.strip()
+        normalized_profile = normalize_app_name(profile_name or "")
+        if normalized_profile in GUEST_PROFILE_NAMES:
+            command.append("--guest")
+        elif normalized_profile in INCOGNITO_PROFILE_NAMES:
+            command.append("--incognito")
         else:
-            profile_directory = resolve_default_chrome_profile_directory()
-        if profile_directory:
-            command.append(f"--profile-directory={profile_directory}")
+            profile_directory = None
+            if profile_name:
+                profile_directory = resolve_chrome_profile_directory(profile_name) or profile_name.strip()
+            else:
+                profile_directory = resolve_default_chrome_profile_directory()
+            if profile_directory:
+                command.append(f"--profile-directory={profile_directory}")
         if url:
             command.append(url)
         return command, spec
 
     if spec.canonical_name == "microsoft edge":
         command = [executable]
-        if profile_name:
+        normalized_profile = normalize_app_name(profile_name or "")
+        if normalized_profile in GUEST_PROFILE_NAMES:
+            command.append("--guest")
+        elif normalized_profile in INCOGNITO_PROFILE_NAMES:
+            command.append("--inprivate")
+        elif profile_name:
             command.append(f"--profile-directory={profile_name.strip()}")
         if url:
             command.append(url)
@@ -587,3 +582,4 @@ def focus_app_window(
         active.get("process_name"),  # type: ignore[arg-type]
         spec,
     )
+

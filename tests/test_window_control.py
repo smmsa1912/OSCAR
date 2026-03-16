@@ -21,6 +21,13 @@ def test_resolve_app_spec_fuzzy_matches_common_typo() -> None:
     assert spec.canonical_name == "file explorer"
 
 
+def test_resolve_app_spec_maps_settings_alias() -> None:
+    spec = resolve_app_spec("windows settings")
+
+    assert spec.canonical_name == "settings"
+    assert spec.shortcut_keys == ("winleft", "i")
+
+
 def test_resolve_default_chrome_profile_directory_prefers_last_used() -> None:
     profile_directory = resolve_default_chrome_profile_directory(
         local_state_data={
@@ -46,6 +53,19 @@ def test_build_launch_command_uses_resolved_known_executable(monkeypatch) -> Non
 
     assert spec.canonical_name == "file explorer"
     assert command == [r"C:\Windows\explorer.exe"]
+
+
+def test_build_launch_command_supports_settings_uri(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "oscar.window_control._resolve_launch_target",
+        lambda spec: r"C:\Windows\System32\cmd.exe",
+    )
+
+    command, spec = build_launch_command("settings")
+
+    assert spec.canonical_name == "settings"
+    assert spec.shortcut_keys == ("winleft", "i")
+    assert command == [r"C:\Windows\System32\cmd.exe", "/c", "start", "", "ms-settings:"]
 
 
 def test_resolve_chrome_profile_directory_matches_display_name() -> None:
@@ -112,3 +132,20 @@ def test_build_launch_command_includes_chrome_profile_when_available(monkeypatch
         "--profile-directory=Default",
         "https://google.com",
     ]
+
+
+def test_build_launch_command_uses_chrome_guest_mode(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "oscar.window_control._resolve_launch_target",
+        lambda spec: r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    )
+
+    command, spec = build_launch_command("chrome", profile_name="Guest Mode")
+
+    assert spec.canonical_name == "chrome"
+    assert command == [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        "--guest",
+    ]
+
+

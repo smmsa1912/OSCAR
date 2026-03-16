@@ -34,6 +34,13 @@ def _parse_float(name: str, default: float) -> float:
     return float(raw_value)
 
 
+def _parse_bool(name: str, default: bool) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None or raw_value.strip() == "":
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _parse_region(value: str | None) -> tuple[int, int, int, int] | None:
     if value is None or value.strip() == "":
         return None
@@ -65,8 +72,6 @@ def _enable_windows_dpi_awareness() -> None:
 
     try:
         import ctypes
-
-        # Keep screenshot coordinates aligned with pointer coordinates on scaled displays.
         ctypes.windll.shcore.SetProcessDpiAwareness(2)
     except Exception:
         try:
@@ -93,7 +98,16 @@ WINDOW_FOCUS_TIMEOUT = _parse_float("WINDOW_FOCUS_TIMEOUT", 2.0)
 SAVE_DIALOG_DELAY = _parse_float("SAVE_DIALOG_DELAY", 0.75)
 FOCUS_SETTLE_DELAY = _parse_float("FOCUS_SETTLE_DELAY", 0.35)
 TYPEWRITE_INTERVAL = _parse_float("TYPEWRITE_INTERVAL", 0.07)
+ENABLE_SCREENSHOT_GRID = _parse_bool("ENABLE_SCREENSHOT_GRID", True)
+SCREENSHOT_GRID_INTERVAL = _parse_int("SCREENSHOT_GRID_INTERVAL", 100)
+ENABLE_CLICK_REFINEMENT = _parse_bool("ENABLE_CLICK_REFINEMENT", True)
+CLICK_REFINEMENT_RADIUS = _parse_int("CLICK_REFINEMENT_RADIUS", 220)
+CLICK_REFINEMENT_MAX_SHIFT = _parse_int("CLICK_REFINEMENT_MAX_SHIFT", 90)
+TERMINAL_TIMEOUT_SECONDS = _parse_float("TERMINAL_TIMEOUT_SECONDS", 20.0)
+TERMINAL_OUTPUT_LIMIT = _parse_int("TERMINAL_OUTPUT_LIMIT", 4000)
 SCREENSHOT_REGION = _parse_region(os.getenv("SCREENSHOT_REGION"))
 
 _enable_windows_dpi_awareness()
 _enable_pyautogui_failsafe()
+
+

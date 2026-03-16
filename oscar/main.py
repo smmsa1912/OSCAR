@@ -13,11 +13,13 @@ from typing import Any
 from urllib.parse import quote_plus
 
 from oscar import config
-from oscar.executor import execute_action, validate_action
-from oscar.gemini_client import ask_gemini
+from oscar.executor import ActionValidationError, execute_action, validate_action
+from oscar.gemini_client import ask_gemini, refine_click_action
 from oscar.prompt_builder import build_prompt
 from oscar.run_logger import write_run_log
 from oscar.screen import capture_screenshot
+from oscar.ui_automation import capture_active_window_controls
+from oscar.user_paths import render_known_path_strings
 from oscar.window_control import (
     app_window_exists,
     focus_app_window,
@@ -44,7 +46,8 @@ def _resolve_user_home_directory() -> Path:
 USER_HOME_DIR = _resolve_user_home_directory()
 OPEN_PREFIXES = ("open ", "launch ", "start ")
 BROWSER_APP_PATTERN = r"google chrome|chrome|browser|microsoft edge|edge|brave|firefox"
-PROFILE_FRAGMENT = r"(?:\s+(?:and\s+)?use\s+(?P<profile>.+?)\s+profile)?"
+PROFILE_FRAGMENT = r"(?:\s+(?:and\s+)?(?:use\s+)?(?P<profile>.+?)\s+profile)?"
+BROWSER_PROFILE_REQUIRED_FRAGMENT = r"(?:\s+(?:and\s+)?(?:use\s+)?(?P<profile>.+?)\s+profile)"
 BROWSER_SEARCH_PATTERN = re.compile(
     rf"^(?:open|launch|start)\s+(?P<app>{BROWSER_APP_PATTERN})"
     rf"{PROFILE_FRAGMENT}"
@@ -57,11 +60,34 @@ BROWSER_NAVIGATE_PATTERN = re.compile(
     r"(?:\s*,\s*|\s+and\s+|\s+then\s+)?(?:go\s+to|goto|navigate\s+to|visit)\s+(?P<url>.+)$",
     re.IGNORECASE,
 )
+BROWSER_MODE_PATTERN = re.compile(
+    rf"^(?:open|launch|start)\s+(?P<app>{BROWSER_APP_PATTERN})"
+    r"(?:\s*,\s*|\s+and\s+|\s+then\s+)?use\s+(?P<profile>.+?)$",
+    re.IGNORECASE,
+)
+BROWSER_PROFILE_OPEN_PATTERN = re.compile(
+    rf"^(?:open|launch|start)\s+(?P<app>{BROWSER_APP_PATTERN})"
+    rf"{BROWSER_PROFILE_REQUIRED_FRAGMENT}"
+    r"(?P<follow_up>(?:\s*,\s*|\s+and\s+|\s+then\s+).+)?$",
+    re.IGNORECASE,
+)
+BROWSER_FOLLOW_UP_PATTERN = re.compile(
+    r"(?:\s*,\s*|\s+and\s+|\s+then\s+)(?:download|save|send|message|reply|open|click|select|choose|pick|upload|attach|login|log\s+in|sign\s+in|share|scroll|press|type|write|fill|submit)\b",
+    re.IGNORECASE,
+)
 OPEN_AND_TEXT_PATTERN = re.compile(
     r"^(?:open|launch|start)\s+(?P<app>.+?)(?:\s*,\s*|\s+and\s+|\s+then\s+|\s+)(?P<verb>type|write|enter|input)\s+(?P<text>.+)$",
     re.IGNORECASE,
 )
 CLOSE_APP_PATTERN = re.compile(r"^(?:close|exit|quit)\s+(?P<app>.+)$", re.IGNORECASE)
+SCREENSHOT_TASK_PATTERN = re.compile(
+    r"^(?:take|capture|grab)\s+(?:a\s+|the\s+)?(?:full\s+screen\s+)?(?:screenshot|screen shot|screen capture)$",
+    re.IGNORECASE,
+)
+SCREEN_SNIP_TASK_PATTERN = re.compile(
+    r"^(?:take|capture|grab)\s+(?:a\s+|the\s+)?(?:screen\s+snip|snip|snippet)$",
+    re.IGNORECASE,
+)
 SAVE_COMMAND_PATTERN = re.compile(
     r"(?:\s*,\s*|\s+and\s+)(?:save(?:\s+it|\s+the\s+file)?\s+(?:in|to)\s+(?:the\s+)?)",
     re.IGNORECASE,
@@ -76,6 +102,18 @@ KNOWN_SAVE_FOLDERS = {
 }
 IMAGE_SEARCH_HINTS = ("image", "images", "photo", "photos", "picture", "pictures", "wallpaper")
 WINDOWS_PATH_PATTERN = re.compile(r"^(?:[a-zA-Z]:[\\/]|\\\\|\.[\\/]|\.\.[\\/])")
+GLOBAL_HOTKEY_SETS = {
+    ("alt", "tab"),
+    ("ctrl", "shift", "esc"),
+    ("winleft", "e"),
+    ("winleft", "i"),
+    ("winleft", "printscreen"),
+    ("winleft", "shift", "s"),
+    ("winright", "e"),
+    ("winright", "i"),
+    ("winright", "printscreen"),
+    ("winright", "shift", "s"),
+}
 
 
 def _now_utc() -> datetime:
@@ -163,7 +201,7 @@ def _resolve_save_destination(location: str) -> Path | None:
     if named_folder is not None:
         return named_folder
 
-    if cleaned.endswith(":" ) and len(cleaned) == 2 and cleaned[0].isalpha():
+    if cleaned.endswith(":") and len(cleaned) == 2 and cleaned[0].isalpha():
         cleaned = f"{cleaned}\\"
 
     if _looks_like_windows_path(cleaned) or "\\" in cleaned or "/" in cleaned:
@@ -185,7 +223,20 @@ def _extract_save_destination(text: str) -> tuple[str, Path | None]:
     return main_text, destination
 
 
-def _extract_browser_search_task(task: str) -> tuple[str, str | None, str] | None:
+def _split_browser_follow_up(text: str) -> tuple[str, bool]:
+    normalized_text = " ".join(text.strip().split())
+    match = BROWSER_FOLLOW_UP_PATTERN.search(normalized_text)
+    if match is None:
+        return normalized_text, False
+
+    primary_text = normalized_text[: match.start()].strip(" ,")
+    if not primary_text:
+        return normalized_text, False
+
+    return primary_text, True
+
+
+def _extract_browser_search_task(task: str) -> tuple[str, str | None, str, bool] | None:
     normalized_task = " ".join(task.strip().split())
     match = BROWSER_SEARCH_PATTERN.match(normalized_task)
     if match is None:
@@ -193,14 +244,16 @@ def _extract_browser_search_task(task: str) -> tuple[str, str | None, str] | Non
 
     app_name = _clean_app_name_fragment(match.group("app"))
     profile_name = match.group("profile")
-    query = _strip_wrapping_quotes(match.group("query").strip())
-    if not app_name or not query:
+    query_text, has_follow_up = _split_browser_follow_up(
+        _strip_wrapping_quotes(match.group("query").strip())
+    )
+    if not app_name or not query_text:
         return None
 
-    return app_name, profile_name.strip() if profile_name else None, query
+    return app_name, profile_name.strip() if profile_name else None, query_text, has_follow_up
 
 
-def _extract_browser_navigation_task(task: str) -> tuple[str, str | None, str] | None:
+def _extract_browser_navigation_task(task: str) -> tuple[str, str | None, str, bool] | None:
     normalized_task = " ".join(task.strip().split())
     match = BROWSER_NAVIGATE_PATTERN.match(normalized_task)
     if match is None:
@@ -208,11 +261,79 @@ def _extract_browser_navigation_task(task: str) -> tuple[str, str | None, str] |
 
     app_name = _clean_app_name_fragment(match.group("app"))
     profile_name = match.group("profile")
-    url = _normalize_url(match.group("url"))
-    if not app_name or not url:
+    normalized_url, has_follow_up = _split_browser_follow_up(_normalize_url(match.group("url")))
+    if not app_name or not normalized_url:
         return None
 
-    return app_name, profile_name.strip() if profile_name else None, url
+    return app_name, profile_name.strip() if profile_name else None, normalized_url, has_follow_up
+
+
+def _extract_browser_mode_task(task: str) -> tuple[str, str, bool] | None:
+    normalized_task = " ".join(task.strip().split())
+    match = BROWSER_MODE_PATTERN.match(normalized_task)
+    if match is None:
+        return None
+
+    app_name = _clean_app_name_fragment(match.group("app"))
+    profile_name, has_follow_up = _split_browser_follow_up(
+        _strip_wrapping_quotes(match.group("profile").strip())
+    )
+    if not app_name or not profile_name:
+        return None
+
+    return app_name, profile_name, has_follow_up
+
+
+def _extract_browser_open_task(task: str) -> tuple[str, str, bool] | None:
+    normalized_task = " ".join(task.strip().split())
+    match = BROWSER_PROFILE_OPEN_PATTERN.match(normalized_task)
+    if match is None:
+        return None
+
+    app_name = _clean_app_name_fragment(match.group("app"))
+    profile_name = _strip_wrapping_quotes(match.group("profile").strip())
+    has_follow_up = bool((match.group("follow_up") or "").strip())
+    if not app_name or not profile_name:
+        return None
+
+    return app_name, profile_name, has_follow_up
+
+
+def _extract_screenshot_shortcut(task: str) -> tuple[list[str], str] | None:
+    normalized_task = " ".join(task.strip().split())
+    if SCREENSHOT_TASK_PATTERN.match(normalized_task):
+        return ["win", "printscreen"], "Use the Windows screenshot shortcut to save a full-screen screenshot."
+    if SCREEN_SNIP_TASK_PATTERN.match(normalized_task):
+        return ["win", "shift", "s"], "Use the Windows snipping shortcut to start a precise screen snip."
+    return None
+
+
+def _extract_screenshot_save_task(task: str) -> tuple[list[str], str, Path] | None:
+    task_without_save, destination = _extract_save_destination(task)
+    if destination is None:
+        return None
+
+    screenshot_shortcut = _extract_screenshot_shortcut(task_without_save)
+    if screenshot_shortcut is None:
+        return None
+
+    keys, reasoning = screenshot_shortcut
+    return keys, reasoning, destination
+
+
+def _build_move_latest_screenshot_command(destination: Path) -> str:
+    screenshots_dir = USER_HOME_DIR / "Pictures" / "Screenshots"
+    destination_dir = destination if not destination.suffix else destination.parent
+
+    screenshots_dir_str = str(screenshots_dir).replace("'", "''")
+    destination_dir_str = str(destination_dir).replace("'", "''")
+    return (
+        f"$src = Get-ChildItem -LiteralPath '{screenshots_dir_str}' -Filter *.png | "
+        "Sort-Object LastWriteTime -Descending | Select-Object -First 1; "
+        "if ($null -eq $src) { exit 1 }; "
+        f"New-Item -ItemType Directory -Force -Path '{destination_dir_str}' | Out-Null; "
+        f"Move-Item -LiteralPath $src.FullName -Destination '{destination_dir_str}' -Force"
+    )
 
 
 def _extract_close_task(task: str) -> str | None:
@@ -294,11 +415,55 @@ def _build_output_file_path(app_name: str, text: str, destination: Path) -> str:
         return str(target_path)
 
     file_stem = _suggest_file_stem(text, app_name)
-    suffix = ".txt" if app_name == "notepad" else ".txt"
-    return str(target_path / f"{file_stem}{suffix}")
+    return str(target_path / f"{file_stem}.txt")
 
 
 def _infer_bootstrap_actions(task: str) -> tuple[list[dict[str, Any]], bool] | None:
+    screenshot_save = _extract_screenshot_save_task(task)
+    if screenshot_save is not None:
+        keys, reasoning, destination = screenshot_save
+        return (
+            [
+                {
+                    "action": "hotkey",
+                    "keys": keys,
+                    "reasoning": reasoning,
+                    "task_complete": False,
+                },
+                {
+                    "action": "wait",
+                    "seconds": 1.0,
+                    "reasoning": "Wait briefly for Windows to finish saving the new screenshot file.",
+                    "task_complete": False,
+                },
+                {
+                    "action": "terminal_command",
+                    "command": _build_move_latest_screenshot_command(destination),
+                    "working_directory": str(destination if destination.is_dir() else destination.parent),
+                    "reasoning": f"Move the newest screenshot from Pictures\\Screenshots to {destination} without relying on Explorer clicks.",
+                    "task_complete": False,
+                },
+                _build_terminal_done_action(f"The screenshot was captured and moved to {destination}."),
+            ],
+            True,
+        )
+
+    screenshot_shortcut = _extract_screenshot_shortcut(task)
+    if screenshot_shortcut is not None:
+        keys, reasoning = screenshot_shortcut
+        return (
+            [
+                {
+                    "action": "hotkey",
+                    "keys": keys,
+                    "reasoning": reasoning,
+                    "task_complete": False,
+                },
+                _build_terminal_done_action("The screenshot shortcut was triggered."),
+            ],
+            True,
+        )
+
     close_task = _extract_close_task(task)
     if close_task is not None:
         if not app_window_exists(close_task):
@@ -321,7 +486,7 @@ def _infer_bootstrap_actions(task: str) -> tuple[list[dict[str, Any]], bool] | N
 
     browser_search = _extract_browser_search_task(task)
     if browser_search is not None:
-        app_name, profile_name, query = browser_search
+        app_name, profile_name, query, has_follow_up = browser_search
         search_url = _build_browser_search_url(query)
         action: dict[str, Any] = {
             "action": "open_app",
@@ -332,11 +497,13 @@ def _infer_bootstrap_actions(task: str) -> tuple[list[dict[str, Any]], bool] | N
         }
         if profile_name:
             action["profile_name"] = profile_name
+        if has_follow_up:
+            return [action], False
         return [action, _build_terminal_done_action(f"The browser was opened and searched for '{query}'.")], True
 
     browser_navigation = _extract_browser_navigation_task(task)
     if browser_navigation is not None:
-        app_name, profile_name, url = browser_navigation
+        app_name, profile_name, url, has_follow_up = browser_navigation
         action: dict[str, Any] = {
             "action": "open_app",
             "app_name": app_name,
@@ -346,7 +513,53 @@ def _infer_bootstrap_actions(task: str) -> tuple[list[dict[str, Any]], bool] | N
         }
         if profile_name:
             action["profile_name"] = profile_name
+        if has_follow_up:
+            return [action], False
         return [action, _build_terminal_done_action(f"The browser was opened and navigated to {url}.")], True
+
+    browser_mode = _extract_browser_mode_task(task)
+    if browser_mode is not None:
+        app_name, profile_name, has_follow_up = browser_mode
+        action: dict[str, Any] = {
+            "action": "open_app",
+            "app_name": app_name,
+            "profile_name": profile_name,
+            "reasoning": (
+                f"Launch {app_name} directly using the requested browser mode/profile '{profile_name}' "
+                "instead of clicking the profile picker."
+            ),
+            "task_complete": False,
+        }
+        if has_follow_up:
+            return [action], False
+        return [
+            action,
+            _build_terminal_done_action(
+                f"The browser was opened using the requested mode/profile '{profile_name}'."
+            ),
+        ], True
+
+    browser_open = _extract_browser_open_task(task)
+    if browser_open is not None:
+        app_name, profile_name, has_follow_up = browser_open
+        action: dict[str, Any] = {
+            "action": "open_app",
+            "app_name": app_name,
+            "profile_name": profile_name,
+            "reasoning": (
+                f"Open or focus {app_name} using the requested profile '{profile_name}' "
+                "before continuing with the remaining browser task."
+            ),
+            "task_complete": False,
+        }
+        if has_follow_up:
+            return [action], False
+        return [
+            action,
+            _build_terminal_done_action(
+                f"The browser '{app_name}' was opened using the requested profile '{profile_name}'."
+            ),
+        ], True
 
     multi_open_apps = _extract_multi_open_apps(task)
     if multi_open_apps is not None:
@@ -456,6 +669,7 @@ def _infer_bootstrap_actions(task: str) -> tuple[list[dict[str, Any]], bool] | N
     if not app_name:
         return None
 
+    open_spec = resolve_app_spec(app_name)
     actions: list[dict[str, Any]] = [
         {
             "action": "open_app",
@@ -464,16 +678,37 @@ def _infer_bootstrap_actions(task: str) -> tuple[list[dict[str, Any]], bool] | N
             "task_complete": False,
         }
     ]
-    if task_is_complete:
+    if task_is_complete and open_spec.is_known:
         actions.append(
             _build_terminal_done_action(f"The requested app '{app_name}' was opened or focused directly.")
         )
+        return actions, True
 
-    return actions, task_is_complete
+    return actions, False
+
+
+def _is_global_hotkey_action(action: dict[str, Any]) -> bool:
+    if action.get("action") != "hotkey":
+        return False
+
+    keys = tuple(str(key).lower() for key in action.get("keys", []))
+    if not keys:
+        return False
+
+    return keys in GLOBAL_HOTKEY_SETS or "winleft" in keys or "winright" in keys
+
+
+def _action_requires_target_focus(action: dict[str, Any]) -> bool:
+    action_name = action["action"]
+    if action_name in {"click", "double_click", "right_click", "uia_click", "scroll", "type", "press", "save_file"}:
+        return True
+    if action_name == "hotkey":
+        return not _is_global_hotkey_action(action)
+    return False
 
 
 def _action_delay(action: dict[str, Any]) -> float:
-    if action["action"] in {"wait", "done", "open_app"}:
+    if action["action"] in {"wait", "done", "open_app", "terminal_command"}:
         return 0.0
     return config.ACTION_DELAY
 
@@ -494,40 +729,79 @@ def _execute_action_with_state(
     action: dict[str, Any],
     *,
     current_app_target: str | None,
-) -> str | None:
+) -> tuple[str | None, bool]:
     action_name = action["action"]
 
-    if action_name in {"type", "hotkey", "press", "save_file"} and current_app_target:
-        _ensure_target_focus(current_app_target, action_name)
+    if current_app_target and _action_requires_target_focus(action):
+        try:
+            _ensure_target_focus(current_app_target, action_name)
+        except RuntimeError as exc:
+            action["execution_confirmed"] = False
+            action["execution_error"] = str(exc)
+            print(
+                f"OSCAR note: {exc} Gemini will refocus or re-open the target before continuing."
+            )
+            return current_app_target, False
 
     if action_name == "open_app":
         current_app_target = action["app_name"]
-        execute_action(action)
+        spec = resolve_app_spec(current_app_target)
+        try:
+            action_result = execute_action(action)
+        except ActionValidationError as exc:
+            print(
+                f"OSCAR note: deterministic launch for '{current_app_target}' failed; Gemini will try a UI fallback. ({exc})"
+            )
+            return current_app_target, False
+
+        if isinstance(action_result, dict):
+            action.update(action_result)
+
+        if not spec.is_known:
+            time.sleep(config.APP_LAUNCH_DELAY)
+            print(
+                f"OSCAR note: '{current_app_target}' was launched through the generic app opener, so Gemini will verify it on screen before continuing."
+            )
+            return current_app_target, False
 
         if focus_app_window(current_app_target, timeout=config.APP_LAUNCH_DELAY):
             time.sleep(config.FOCUS_SETTLE_DELAY)
-            return current_app_target
-
-        if app_window_exists(current_app_target):
-            time.sleep(config.FOCUS_SETTLE_DELAY)
-            return current_app_target
+            return current_app_target, True
 
         time.sleep(config.APP_LAUNCH_DELAY)
-        return current_app_target
+        if app_window_exists(current_app_target):
+            print(
+                f"OSCAR note: '{current_app_target}' appears to exist but is not focused yet; Gemini will verify or bring it to the foreground before continuing."
+            )
+        else:
+            print(
+                f"OSCAR note: '{current_app_target}' did not become visible after deterministic launch; Gemini will try a UI fallback."
+            )
+        return current_app_target, False
 
     if action_name == "close_app":
-        execute_action(action)
+        action_result = execute_action(action)
+        if isinstance(action_result, dict):
+            action.update(action_result)
         if config.ACTION_DELAY > 0:
             time.sleep(config.ACTION_DELAY)
-        return None
+        return None, True
 
-    execute_action(action)
+    action_result = execute_action(action)
+    if isinstance(action_result, dict):
+        action.update(action_result)
 
     delay_seconds = _action_delay(action)
     if delay_seconds > 0:
         time.sleep(delay_seconds)
 
-    return current_app_target
+    if action.get("execution_confirmed") is False:
+        print(
+            f"OSCAR note: '{action_name}' ran but was not fully confirmed; Gemini will inspect the result before continuing."
+        )
+        return current_app_target, False
+
+    return current_app_target, True
 
 
 def run_oscar(task: str) -> Path:
@@ -549,7 +823,6 @@ def run_oscar(task: str) -> Path:
         inferred_bootstrap = _infer_bootstrap_actions(task)
         if inferred_bootstrap is not None:
             bootstrap_actions, completes_task = inferred_bootstrap
-            bootstrap_offset = len([action for action in bootstrap_actions if action["action"] != "done"])
 
             for step_index, raw_action in enumerate(bootstrap_actions, start=1):
                 action = validate_action(raw_action)
@@ -562,16 +835,29 @@ def run_oscar(task: str) -> Path:
                     print("Task completed!")
                     break
 
-                current_app_target = _execute_action_with_state(
+                bootstrap_offset += 1
+                current_app_target, action_succeeded = _execute_action_with_state(
                     action,
                     current_app_target=current_app_target,
                 )
+                if not action_succeeded:
+                    action["execution_confirmed"] = False
+                    if action["action"] == "open_app":
+                        action["launch_confirmed"] = False
+                        action["reasoning"] = (
+                            f"{action['reasoning']} Deterministic launch could not confirm the app on screen, "
+                            "so Gemini should use shortcut or UI fallback next."
+                        )
+                    completed_early = False
+                    break
 
         if not completed_early:
             for step_index in range(bootstrap_offset, config.MAX_STEPS):
                 screenshot, screen_size = capture_screenshot(config.SCREENSHOT_REGION)
                 active_window = get_active_window_info()
                 cursor_position = get_cursor_position()
+                ui_controls = capture_active_window_controls(limit=20)
+                known_paths = render_known_path_strings()
                 prompt = build_prompt(
                     task,
                     history,
@@ -581,9 +867,22 @@ def run_oscar(task: str) -> Path:
                     active_window_title=active_window.get("title"),  # type: ignore[arg-type]
                     active_process_name=active_window.get("process_name"),  # type: ignore[arg-type]
                     cursor_position=cursor_position,
+                    known_paths=known_paths,
+                    ui_controls=ui_controls,
                 )
                 raw_action = ask_gemini(screenshot, prompt, model_name=config.GEMINI_MODEL)
                 action = validate_action(raw_action, screen_size=screen_size)
+                refined_action = refine_click_action(
+                    screenshot,
+                    action,
+                    model_name=config.GEMINI_MODEL,
+                )
+                if refined_action.get("x") != action.get("x") or refined_action.get("y") != action.get("y"):
+                    print(
+                        f"Refined pointer target: ({action.get('x')}, {action.get('y')}) -> "
+                        f"({refined_action.get('x')}, {refined_action.get('y')})"
+                    )
+                action = refined_action
                 history.append(action)
 
                 print(f"Step {step_index + 1}: {action['reasoning']}")
@@ -593,10 +892,18 @@ def run_oscar(task: str) -> Path:
                     print("Task completed!")
                     break
 
-                current_app_target = _execute_action_with_state(
+                current_app_target, action_succeeded = _execute_action_with_state(
                     action,
                     current_app_target=current_app_target,
                 )
+                if not action_succeeded:
+                    action["execution_confirmed"] = False
+                    if action["action"] == "open_app":
+                        action["launch_confirmed"] = False
+                        action["reasoning"] = (
+                            f"{action['reasoning']} Deterministic launch could not confirm the app on screen, "
+                            "so Gemini should use shortcut or UI fallback next."
+                        )
             else:
                 status = "max_steps_reached"
                 print(f"Reached the maximum number of steps ({config.MAX_STEPS}).")
@@ -648,3 +955,16 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -4,13 +4,29 @@ from dataclasses import dataclass
 
 import pytest
 
-from oscar.gemini_client import GeminiResponseError, ask_gemini
+from oscar.gemini_client import GeminiResponseError, ask_gemini, refine_click_action
 
 
 class FakeImage:
     def save(self, buffer, format: str) -> None:  # noqa: A002 - matches PIL signature
         assert format == "PNG"
         buffer.write(b"fake-image-bytes")
+
+
+class FakeCroppableImage(FakeImage):
+    def __init__(self, size: tuple[int, int] = (1920, 1080)) -> None:
+        self.size = size
+        self.crop_box: tuple[int, int, int, int] | None = None
+        self.resize_calls: list[tuple[int, int]] = []
+
+    def crop(self, box: tuple[int, int, int, int]) -> "FakeCroppableImage":
+        self.crop_box = box
+        return FakeCroppableImage((box[2] - box[0], box[3] - box[1]))
+
+    def resize(self, size: tuple[int, int], _resample=None) -> "FakeCroppableImage":
+        self.resize_calls.append(size)
+        self.size = size
+        return self
 
 
 @dataclass
@@ -207,3 +223,93 @@ def test_ask_gemini_raises_after_retry_is_exhausted(monkeypatch: pytest.MonkeyPa
 
     with pytest.raises(GeminiResponseError, match="invalid JSON"):
         ask_gemini(FakeImage(), "Retry please.", api_key="secret")
+
+
+def test_refine_click_action_returns_adjusted_coordinates(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_genai = FakeGenAI(['{"x": 118, "y": 222, "reasoning": "Use the center of the visible button."}'])
+    screenshot = FakeCroppableImage()
+
+    monkeypatch.setattr("oscar.gemini_client._load_genai", lambda: fake_genai)
+    monkeypatch.setattr("oscar.gemini_client.config.ENABLE_CLICK_REFINEMENT", True)
+    monkeypatch.setattr("oscar.gemini_client.config.CLICK_REFINEMENT_RADIUS", 120)
+    monkeypatch.setattr("oscar.gemini_client.config.CLICK_REFINEMENT_MAX_SHIFT", 90)
+
+    action = refine_click_action(
+        screenshot,
+        {
+            "action": "click",
+            "x": 100,
+            "y": 200,
+            "reasoning": "Click the browser profile button.",
+            "task_complete": False,
+        },
+        api_key="secret",
+        model_name="unit-test-model",
+    )
+
+    assert action["x"] == 118
+    assert action["y"] == 222
+    assert "Refined target" in action["reasoning"]
+    assert screenshot.crop_box == (58, 162, 178, 282)
+
+
+def test_refine_click_action_falls_back_when_refined_point_is_outside_crop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_genai = FakeGenAI(['{"x": 9999, "y": 9999, "reasoning": "Somewhere else."}'])
+    screenshot = FakeCroppableImage()
+    original_action = {
+        "action": "click",
+        "x": 100,
+        "y": 200,
+        "reasoning": "Click the browser profile button.",
+        "task_complete": False,
+    }
+
+    monkeypatch.setattr("oscar.gemini_client._load_genai", lambda: fake_genai)
+    monkeypatch.setattr("oscar.gemini_client.config.ENABLE_CLICK_REFINEMENT", True)
+    monkeypatch.setattr("oscar.gemini_client.config.CLICK_REFINEMENT_RADIUS", 120)
+    monkeypatch.setattr("oscar.gemini_client.config.CLICK_REFINEMENT_MAX_SHIFT", 90)
+
+    action = refine_click_action(
+        screenshot,
+        original_action,
+        api_key="secret",
+        model_name="unit-test-model",
+    )
+
+    assert action == original_action
+
+
+def test_refine_click_action_rejects_large_shift_within_crop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_genai = FakeGenAI(['{"x": 180, "y": 295, "reasoning": "The icon is farther away in the crop."}'])
+    screenshot = FakeCroppableImage()
+    original_action = {
+        "action": "click",
+        "x": 100,
+        "y": 200,
+        "reasoning": "Click the browser profile button.",
+        "task_complete": False,
+    }
+
+    monkeypatch.setattr("oscar.gemini_client._load_genai", lambda: fake_genai)
+    monkeypatch.setattr("oscar.gemini_client.config.ENABLE_CLICK_REFINEMENT", True)
+    monkeypatch.setattr("oscar.gemini_client.config.CLICK_REFINEMENT_RADIUS", 120)
+    monkeypatch.setattr("oscar.gemini_client.config.CLICK_REFINEMENT_MAX_SHIFT", 40)
+
+    action = refine_click_action(
+        screenshot,
+        original_action,
+        api_key="secret",
+        model_name="unit-test-model",
+    )
+
+    assert action == original_action
+
+
+
+
+
+
