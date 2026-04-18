@@ -1,0 +1,14 @@
+google-genai
+google-generativeai
+pyautogui
+Pillow
+mss
+python-dotenv
+PyGetWindow
+psutil
+pywin32
+pywinauto
+playwright
+fastapi
+uvicorn[standard]
+

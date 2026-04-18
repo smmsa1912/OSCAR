@@ -3,6 +3,11 @@ __pycache__/
 *.py[codz]
 *$py.class
 .vscode/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+*.iml
 
 # C extensions
 *.so
@@ -10,12 +15,15 @@ __pycache__/
 # Distribution / packaging
 .Python
 build/
+desktop/build/
 develop-eggs/
 dist/
 downloads/
 eggs/
 .eggs/
-lib/
+desktop/.dart_tool/
+desktop/.flutter-plugins-dependencies
+desktop/windows/flutter/ephemeral/
 lib64/
 parts/
 sdist/
@@ -50,6 +58,9 @@ coverage.xml
 *.py.cover
 .hypothesis/
 .pytest_cache/
+.pytest_tmp/
+.tmp_pytest_codex/
+codex_pytest_base/
 cover/
 
 # Translations
@@ -75,6 +86,7 @@ docs/_build/
 # PyBuilder
 .pybuilder/
 target/
+.idea/
 
 # Jupyter Notebook
 .ipynb_checkpoints
@@ -137,6 +149,7 @@ celerybeat.pid
 
 # Environments
 .env
+backend/.env
 .envrc
 .venv
 env/
@@ -208,3 +221,9 @@ marimo/_lsp/
 __marimo__/
 
 logs/
+.playwright/
+.oscar/
+backend/logs/
+backend/.playwright/
+backend/.oscar/
+tmp*/
