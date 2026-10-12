@@ -10,6 +10,23 @@ def _reload_config(monkeypatch: pytest.MonkeyPatch, **env: str):
     for key in [
         "GEMINI_API_KEY",
         "GEMINI_MODEL",
+        "LLM_PROVIDER",
+        "GEMINI_TIMEOUT_SECONDS",
+        "OMNIROUTE_BASE_URL",
+        "OMNIROUTE_API_KEY",
+        "OMNIROUTE_MODEL",
+        "OMNIROUTE_TIMEOUT_SECONDS",
+        "OMNIROUTE_MAX_PROMPT_CHARS",
+        "OMNIROUTE_MAX_OUTPUT_TOKENS",
+        "OMNIROUTE_MAX_REQUEST_TOKENS",
+        "OMNIROUTE_MAX_TASK_TOKENS",
+        "OMNIROUTE_MAX_DAILY_TOKENS",
+        "OMNIROUTE_MAX_IMAGE_DIMENSION",
+        "OMNIROUTE_AUTO_ROUTING",
+        "OMNIROUTE_MODEL_FAST",
+        "OMNIROUTE_MODEL_REASONING",
+        "OMNIROUTE_MODEL_VISION",
+        "OMNIROUTE_MODEL_FALLBACK",
         "MAX_STEPS",
         "ACTION_DELAY",
         "APP_LAUNCH_DELAY",
@@ -53,6 +70,22 @@ def test_config_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     config = _reload_config(monkeypatch)
 
     assert config.GEMINI_MODEL == "gemini-2.5-flash"
+    assert config.LLM_PROVIDER == "gemini"
+    assert config.GEMINI_TIMEOUT_SECONDS == 60.0
+    assert config.OMNIROUTE_BASE_URL == "http://localhost:8080/v1"
+    assert config.OMNIROUTE_API_KEY == ""
+    assert config.OMNIROUTE_MODEL == "auto/best-fast"
+    assert config.OMNIROUTE_MODEL_FAST == "auto/best-fast"
+    assert config.OMNIROUTE_MODEL_REASONING == "auto/best-reasoning"
+    assert config.OMNIROUTE_MODEL_VISION == "auto/best-vision"
+    assert config.OMNIROUTE_MODEL_FALLBACK == "auto/best-fast"
+    assert config.OMNIROUTE_TIMEOUT_SECONDS == 45.0
+    assert config.OMNIROUTE_MAX_PROMPT_CHARS == 7000
+    assert config.OMNIROUTE_MAX_OUTPUT_TOKENS == 350
+    assert config.OMNIROUTE_MAX_REQUEST_TOKENS == 5000
+    assert config.OMNIROUTE_MAX_TASK_TOKENS == 20000
+    assert config.OMNIROUTE_MAX_DAILY_TOKENS == 30000
+    assert config.OMNIROUTE_MAX_IMAGE_DIMENSION == 1024
     assert config.MAX_STEPS == 25
     assert config.ACTION_DELAY == 0.5
     assert config.APP_LAUNCH_DELAY == 1.5
@@ -85,6 +118,12 @@ def test_config_parses_values(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch,
         GEMINI_API_KEY="secret-key",
         GEMINI_MODEL="custom-model",
+        LLM_PROVIDER="omniroute",
+        GEMINI_TIMEOUT_SECONDS="12.5",
+        OMNIROUTE_BASE_URL="http://127.0.0.1:8080/v1/",
+        OMNIROUTE_API_KEY="route-secret",
+        OMNIROUTE_MODEL="test-model",
+        OMNIROUTE_TIMEOUT_SECONDS="25",
         MAX_STEPS="5",
         ACTION_DELAY="1.25",
         APP_LAUNCH_DELAY="2.5",
@@ -114,6 +153,12 @@ def test_config_parses_values(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert config.require_api_key() == "secret-key"
     assert config.GEMINI_MODEL == "custom-model"
+    assert config.LLM_PROVIDER == "omniroute"
+    assert config.GEMINI_TIMEOUT_SECONDS == 12.5
+    assert config.OMNIROUTE_BASE_URL == "http://127.0.0.1:8080/v1"
+    assert config.OMNIROUTE_API_KEY == "route-secret"
+    assert config.OMNIROUTE_MODEL == "test-model"
+    assert config.OMNIROUTE_TIMEOUT_SECONDS == 25.0
     assert config.MAX_STEPS == 5
     assert config.ACTION_DELAY == 1.25
     assert config.APP_LAUNCH_DELAY == 2.5
@@ -157,6 +202,8 @@ def test_require_api_key_raises_when_missing(monkeypatch: pytest.MonkeyPatch) ->
         ("TERMINAL_OUTPUT_LIMIT", "999999999", "TERMINAL_OUTPUT_LIMIT must be <= 1000000"),
         ("RETRY_BACKOFF_FACTOR", "0.5", "RETRY_BACKOFF_FACTOR must be >= 1.0"),
         ("PLAYWRIGHT_TIMEOUT_SECONDS", "nan", "must be a finite number"),
+        ("GEMINI_TIMEOUT_SECONDS", "0", "GEMINI_TIMEOUT_SECONDS must be >= 0.1"),
+        ("OMNIROUTE_TIMEOUT_SECONDS", "700", "OMNIROUTE_TIMEOUT_SECONDS must be <= 600"),
     ],
 )
 def test_config_rejects_invalid_numeric_ranges(
@@ -183,3 +230,8 @@ def test_config_rejects_retry_max_below_initial(monkeypatch: pytest.MonkeyPatch)
             RETRY_INITIAL_INTERVAL_SECONDS="2",
             RETRY_MAX_INTERVAL_SECONDS="1",
         )
+
+
+def test_config_rejects_unknown_llm_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValueError, match="LLM_PROVIDER must be either"):
+        _reload_config(monkeypatch, LLM_PROVIDER="unknown-provider")

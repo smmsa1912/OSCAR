@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from oscar.brain.planner import GeminiBrain
+from oscar.brain.planner import GeminiBrain, ModelBrain
 from oscar.context import TaskContext
 from oscar.gemini_client import GeminiResponseError
 from oscar.memory import TaskMemory
@@ -390,3 +390,38 @@ async def test_planner_error_recovery_message_is_not_json_specific() -> None:
 
     assert action["action"] == "wait"
     assert "model response or planning error" in action["reasoning"]
+
+
+
+def test_planner_stops_task_when_token_budget_is_exhausted() -> None:
+    planner = GeminiBrain(ask_model=lambda *_args, **_kwargs: {"action": "wait"})
+    action = planner._recover_from_model_error(
+        RuntimeError("OSCAR stopped before the model request because this task reached its configured token budget")
+    )
+    assert action["action"] == "done"
+    assert action["task_complete"] is True
+    assert "token budget" in action["reasoning"]
+
+
+
+@pytest.mark.anyio
+async def test_omniroute_token_budget_error_stops_planning_without_retry() -> None:
+    from oscar.token_budget import TokenBudgetExceeded
+
+    class ExhaustedProvider:
+        provider_name = "omniroute"
+        default_model = "auto/best-fast"
+
+        def generate_action(self, *_args, **_kwargs):
+            raise TokenBudgetExceeded(
+                "Today's configured OmniRoute token budget would be exceeded."
+            )
+
+    planner = ModelBrain(provider=ExhaustedProvider())
+    action = await planner.plan_next_action(
+        _context("Open the browser and search for a topic"),
+        TaskMemory(),
+    )
+    assert action["action"] == "done"
+    assert action["task_complete"] is True
+    assert "token budget" in action["reasoning"].lower()

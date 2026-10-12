@@ -147,9 +147,51 @@ def _enable_pyautogui_failsafe() -> None:
     pyautogui.FAILSAFE = True
 
 
+LLM_PROVIDER = (os.getenv("LLM_PROVIDER", "gemini").strip() or "gemini").lower()
+if LLM_PROVIDER not in {"gemini", "omniroute"}:
+    raise ValueError("LLM_PROVIDER must be either 'gemini' or 'omniroute'.")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = (
     os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+)
+GEMINI_TIMEOUT_SECONDS = _parse_float(
+    "GEMINI_TIMEOUT_SECONDS", 60.0, minimum=0.1, maximum=600
+)
+OMNIROUTE_BASE_URL = (
+    os.getenv("OMNIROUTE_BASE_URL", "").strip().rstrip("/")
+    or "http://localhost:8080/v1"
+)
+OMNIROUTE_API_KEY = os.getenv("OMNIROUTE_API_KEY", "").strip()
+# OmniRoute's auto/* IDs were confirmed from the user's local /models response.
+# Gemini remains the global default; these only apply when OmniRoute is selected.
+OMNIROUTE_MODEL = os.getenv("OMNIROUTE_MODEL", "auto/best-fast").strip() or "auto/best-fast"
+OMNIROUTE_AUTO_ROUTING = _parse_bool("OMNIROUTE_AUTO_ROUTING", True)
+OMNIROUTE_MODEL_FAST = os.getenv("OMNIROUTE_MODEL_FAST", "auto/best-fast").strip() or "auto/best-fast"
+OMNIROUTE_MODEL_REASONING = os.getenv("OMNIROUTE_MODEL_REASONING", "auto/best-reasoning").strip() or "auto/best-reasoning"
+OMNIROUTE_MODEL_VISION = os.getenv("OMNIROUTE_MODEL_VISION", "auto/best-vision").strip() or "auto/best-vision"
+OMNIROUTE_MODEL_FALLBACK = os.getenv("OMNIROUTE_MODEL_FALLBACK", "auto/best-fast").strip() or "auto/best-fast"
+OMNIROUTE_TIMEOUT_SECONDS = _parse_float(
+    "OMNIROUTE_TIMEOUT_SECONDS", 45.0, minimum=0.1, maximum=600
+)
+# Cost controls: prompt truncation, response ceiling, per-request reservation,
+# and a per-task budget. Estimates are conservative; provider usage wins if returned.
+OMNIROUTE_MAX_PROMPT_CHARS = _parse_int(
+    "OMNIROUTE_MAX_PROMPT_CHARS", 7000, minimum=1000, maximum=100000
+)
+OMNIROUTE_MAX_OUTPUT_TOKENS = _parse_int(
+    "OMNIROUTE_MAX_OUTPUT_TOKENS", 350, minimum=64, maximum=8192
+)
+OMNIROUTE_MAX_REQUEST_TOKENS = _parse_int(
+    "OMNIROUTE_MAX_REQUEST_TOKENS", 5000, minimum=512, maximum=32000
+)
+OMNIROUTE_MAX_TASK_TOKENS = _parse_int(
+    "OMNIROUTE_MAX_TASK_TOKENS", 20000, minimum=1000, maximum=1_000_000
+)
+OMNIROUTE_MAX_DAILY_TOKENS = _parse_int(
+    "OMNIROUTE_MAX_DAILY_TOKENS", 30000, minimum=1000, maximum=5_000_000
+)
+OMNIROUTE_MAX_IMAGE_DIMENSION = _parse_int(
+    "OMNIROUTE_MAX_IMAGE_DIMENSION", 1024, minimum=256, maximum=4096
 )
 MAX_STEPS = _parse_int("MAX_STEPS", 25, minimum=1, maximum=500)
 ACTION_DELAY = _parse_float("ACTION_DELAY", 0.5, minimum=0, maximum=300)

@@ -1,8 +1,7 @@
 """OpenAI-compatible client for an OmniRoute gateway.
 
-The client deliberately uses the standard library so OmniRoute support does not
-add another runtime dependency. The gateway must expose a chat-completions
-compatible endpoint (normally ``/v1/chat/completions``).
+Uses the standard library so enabling OmniRoute adds no runtime dependency.
+Configure ``OMNIROUTE_BASE_URL`` as the API prefix (usually ending in ``/v1``).
 """
 from __future__ import annotations
 
@@ -14,26 +13,72 @@ import urllib.request
 from typing import Any
 
 from oscar import config
+from oscar.diagnostics import sanitize_text
 from oscar.prompt_builder import SYSTEM_PROMPT
+from oscar.token_budget import estimate_text_tokens, reserve_request, settle_request
 from oscar.utils.logging import get_logger, log_event
 
 LOGGER = get_logger("omniroute_client")
 
 
 class OmniRouteResponseError(RuntimeError):
-    """Raised when the OmniRoute gateway cannot return a valid action object."""
+    """Raised when OmniRoute cannot return a valid action object."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = False,
+        status_code: int | None = None,
+    ) -> None:
+        self.retryable = retryable
+        self.status_code = status_code
+        super().__init__(sanitize_text(message))
+
+
+def _endpoint(base_url: str, suffix: str) -> str:
+    base = base_url.strip().rstrip("/")
+    if not base:
+        raise OmniRouteResponseError("OMNIROUTE_BASE_URL is not configured.")
+    if base.endswith(suffix):
+        return base
+    return f"{base}/{suffix.lstrip('/')}"
 
 
 def _image_data_url(image: Any) -> str | None:
+    """Downscale and JPEG-compress screenshots before sending them to cloud models."""
     if image is None:
         return None
     try:
+        # Pillow images support convert/thumbnail; the PNG fallback keeps the
+        # helper usable with lightweight test doubles and compatible image wrappers.
+        if hasattr(image, "size") and hasattr(image, "convert"):
+            prepared = image.convert("RGB")
+            prepared.thumbnail(
+                (config.OMNIROUTE_MAX_IMAGE_DIMENSION, config.OMNIROUTE_MAX_IMAGE_DIMENSION)
+            )
+            buffer = io.BytesIO()
+            prepared.save(buffer, format="JPEG", quality=75, optimize=True)
+            encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+            return f"data:image/jpeg;base64,{encoded}"
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
         encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
         return f"data:image/png;base64,{encoded}"
     except Exception as exc:
         raise OmniRouteResponseError("Could not encode screenshot for OmniRoute.") from exc
+
+
+def _bounded_prompt(prompt: str) -> str:
+    """Bound prompt size while retaining task instructions and recent context."""
+    limit = config.OMNIROUTE_MAX_PROMPT_CHARS
+    if len(prompt) <= limit:
+        return prompt
+    marker = "\\n[Earlier context omitted to respect OSCAR's prompt-size limit.]\\n"
+    available = max(0, limit - len(marker))
+    head = int(available * 0.55)
+    tail = available - head
+    return prompt[:head] + marker + (prompt[-tail:] if tail else "")
 
 
 def _extract_json_object(content: str) -> dict[str, Any]:
@@ -51,7 +96,6 @@ def _extract_json_object(content: str) -> dict[str, Any]:
             return parsed
     except json.JSONDecodeError:
         pass
-    # Allow harmless prose around a JSON object, while requiring a valid object.
     start = text.find("{")
     if start >= 0:
         depth = 0
@@ -81,6 +125,38 @@ def _extract_json_object(content: str) -> dict[str, Any]:
     raise OmniRouteResponseError("OmniRoute response did not contain a valid JSON object.")
 
 
+def _request_json(url: str, *, method: str = "GET", payload: dict[str, Any] | None = None,
+                  timeout: float | None = None) -> dict[str, Any]:
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    if config.OMNIROUTE_API_KEY:
+        headers["Authorization"] = f"Bearer {config.OMNIROUTE_API_KEY}"
+    body = json.dumps(payload).encode("utf-8") if payload is not None else None
+    request = urllib.request.Request(url, data=body, headers=headers, method=method)
+    request_timeout = config.OMNIROUTE_TIMEOUT_SECONDS if timeout is None else timeout
+    try:
+        with urllib.request.urlopen(request, timeout=request_timeout) as response:
+            decoded = json.loads(response.read().decode("utf-8"))
+        if not isinstance(decoded, dict):
+            raise OmniRouteResponseError("OmniRoute returned an unexpected API response format.")
+        return decoded
+    except urllib.error.HTTPError as exc:
+        # Do not echo server response bodies: they can contain request or credential data.
+        retryable = exc.code in {408, 425, 429} or 500 <= exc.code <= 599
+        raise OmniRouteResponseError(
+            f"OmniRoute returned HTTP {exc.code}.",
+            retryable=retryable,
+            status_code=exc.code,
+        ) from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        # Avoid echoing the configured URL: it may contain sensitive query parameters.
+        raise OmniRouteResponseError(
+            f"Could not reach OmniRoute endpoint ({exc.__class__.__name__}).",
+            retryable=True,
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise OmniRouteResponseError("OmniRoute returned invalid JSON from its API endpoint.") from exc
+
+
 def ask_omniroute(
     screenshot: Any | None,
     prompt: str,
@@ -88,61 +164,68 @@ def ask_omniroute(
     model_name: str | None = None,
     timeout: float | None = None,
 ) -> dict[str, Any]:
-    """Request a JSON action from OmniRoute's OpenAI-compatible API."""
-    base_url = config.OMNIROUTE_BASE_URL.rstrip("/")
+    """Request one structured action from an OpenAI-compatible chat endpoint."""
     model = (model_name or config.OMNIROUTE_MODEL).strip()
-    if not base_url:
-        raise OmniRouteResponseError("OMNIROUTE_BASE_URL is not configured.")
     if not model:
         raise OmniRouteResponseError("OMNIROUTE_MODEL is not configured.")
 
-    user_content: Any = prompt
+    bounded_prompt = _bounded_prompt(prompt)
+    user_content: Any = bounded_prompt
     image_url = _image_data_url(screenshot)
     if image_url:
         user_content = [
-            {"type": "text", "text": prompt},
+            {"type": "text", "text": bounded_prompt},
             {"type": "image_url", "image_url": {"url": image_url}},
         ]
+    system_prompt = SYSTEM_PROMPT + "\\nReturn exactly one JSON object."
+    image_tokens = 1200 if image_url else 0
+    estimated_input = estimate_text_tokens(system_prompt + bounded_prompt) + image_tokens
+    estimated_request = estimated_input + config.OMNIROUTE_MAX_OUTPUT_TOKENS
+    if estimated_request > config.OMNIROUTE_MAX_REQUEST_TOKENS:
+        raise OmniRouteResponseError(
+            "OSCAR blocked this model request because its estimated size exceeds "
+            "OMNIROUTE_MAX_REQUEST_TOKENS. Reduce the prompt/image limits or raise the cap."
+        )
+    reservation = reserve_request(
+        estimated_input,
+        config.OMNIROUTE_MAX_OUTPUT_TOKENS,
+    )
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT + "\nReturn exactly one JSON object."},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
         ],
         "temperature": 0.2,
+        "max_tokens": config.OMNIROUTE_MAX_OUTPUT_TOKENS,
         "response_format": {"type": "json_object"},
     }
-    headers = {"Content-Type": "application/json", "Accept": "application/json"}
-    if config.OMNIROUTE_API_KEY:
-        headers["Authorization"] = f"Bearer {config.OMNIROUTE_API_KEY}"
-    request = urllib.request.Request(
-        f"{base_url}/chat/completions",
-        data=json.dumps(payload).encode("utf-8"),
-        headers=headers,
-        method="POST",
-    )
+    endpoint = _endpoint(config.OMNIROUTE_BASE_URL, "/chat/completions")
+    body = _request_json(endpoint, method="POST", payload=payload, timeout=timeout)
+    usage = body.get("usage")
+    actual_tokens = usage.get("total_tokens") if isinstance(usage, dict) else None
+    if isinstance(actual_tokens, int):
+        settle_request(reservation, actual_tokens)
     try:
-        with urllib.request.urlopen(request, timeout=timeout or config.OMNIROUTE_TIMEOUT_SECONDS) as response:
-            body = json.loads(response.read().decode("utf-8"))
         content = body["choices"][0]["message"]["content"]
-        if isinstance(content, list):
-            content = "\n".join(
-                item.get("text", "") for item in content if isinstance(item, dict)
-            )
-        if not isinstance(content, str):
-            raise OmniRouteResponseError("OmniRoute returned an unsupported message content format.")
-        action = _extract_json_object(content)
-        log_event(LOGGER, "llm_response", provider="omniroute", model=model, action=action.get("action"))
-        return action
-    except urllib.error.HTTPError as exc:
-        # Do not include request headers or credential material in diagnostics.
-        detail = exc.read(1000).decode("utf-8", errors="replace")
-        raise OmniRouteResponseError(
-            f"OmniRoute HTTP {exc.code} from {base_url}: {detail or exc.reason}"
-        ) from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise OmniRouteResponseError(
-            f"Could not reach OmniRoute at {base_url}: {exc.__class__.__name__}"
-        ) from exc
-    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
-        raise OmniRouteResponseError("OmniRoute returned an unexpected API response format.") from exc
+    except (KeyError, IndexError, TypeError) as exc:
+        raise OmniRouteResponseError("OmniRoute returned an unexpected chat-completion response.") from exc
+    if isinstance(content, list):
+        content = "\n".join(
+            item.get("text", "") for item in content if isinstance(item, dict)
+        )
+    if not isinstance(content, str):
+        raise OmniRouteResponseError("OmniRoute returned an unsupported message content format.")
+    action = _extract_json_object(content)
+    log_event(LOGGER, "llm_response", provider="omniroute", model=model, action=action.get("action"))
+    return action
+
+
+def list_omniroute_models(*, timeout: float | None = None) -> list[dict[str, Any]]:
+    """Return models exposed by the configured gateway's OpenAI-compatible API."""
+    endpoint = _endpoint(config.OMNIROUTE_BASE_URL, "/models")
+    body = _request_json(endpoint, timeout=timeout)
+    data = body.get("data")
+    if not isinstance(data, list):
+        raise OmniRouteResponseError("OmniRoute models endpoint returned an unexpected response.")
+    return [item for item in data if isinstance(item, dict)]

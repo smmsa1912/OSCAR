@@ -22,7 +22,8 @@ from oscar.memory import TaskMemory, build_action_fingerprint
 from oscar.prompt_builder import build_prompt
 from oscar.utils.logging import get_logger, log_event
 from oscar.utils.paths import generalize_known_user_paths, render_known_path_strings
-from oscar.gemini_client import GeminiResponseError, ask_gemini
+from oscar.gemini_client import GeminiResponseError
+from oscar.model_gateway import ActionModelGateway, create_model_gateway
 
 
 LOGGER = get_logger("planner")
@@ -39,19 +40,32 @@ class BrainPlanner(Protocol):
         """Return the next semantic action for the current task."""
 
 
-class GeminiBrain:
-    """Gemini-backed planner with critique-and-revise safeguards."""
+class ModelBrain:
+    """Provider-neutral planner with critique-and-revise safeguards.
+
+    ``ask_model`` remains available as a test/integration seam for compatibility.
+    Without it, the configured gateway is selected by ``LLM_PROVIDER``.
+    """
 
     def __init__(
         self,
         *,
-        ask_model=ask_gemini,
+        ask_model=None,
+        provider: ActionModelGateway | None = None,
         prompt_builder=build_prompt,
         model_name: str | None = None,
     ) -> None:
-        self.ask_model = ask_model
+        self.provider = provider
+        self._model_name_explicit = model_name is not None
+        if ask_model is None:
+            self.provider = provider or create_model_gateway()
+            self.ask_model = self.provider.generate_action
+            default_model = self.provider.default_model
+        else:
+            self.ask_model = ask_model
+            default_model = config.GEMINI_MODEL
         self.prompt_builder = prompt_builder
-        self.model_name = model_name or config.GEMINI_MODEL
+        self.model_name = model_name or default_model
 
     async def plan_next_action(
         self,
@@ -114,12 +128,23 @@ class GeminiBrain:
         )
 
     async def _ask_model(self, prompt: str, context: TaskContext) -> dict[str, Any]:
+        # Let the OmniRoute gateway select a role-specific model unless the caller
+        # explicitly pinned one. Gemini and injected test adapters keep their legacy
+        # configured-model behavior.
+        selected_model = self.model_name
+        if (
+            not self._model_name_explicit
+            and self.provider is not None
+            and self.provider.provider_name == "omniroute"
+            and config.OMNIROUTE_AUTO_ROUTING
+        ):
+            selected_model = None
         raw_action = await anyio.to_thread.run_sync(
             partial(
                 self.ask_model,
                 context.screenshot,
                 prompt,
-                model_name=self.model_name,
+                model_name=selected_model,
             )
         )
         return dict(raw_action)
@@ -130,6 +155,17 @@ class GeminiBrain:
             exc,
             exc_info=isinstance(exc, (GeminiResponseError, json.JSONDecodeError, ValueError)),
         )
+        safe_error = str(exc).lower()
+        if "token budget" in safe_error or "estimated size exceeds" in safe_error:
+            return {
+                "action": "done",
+                "reasoning": (
+                    "Stopped before another cloud request to respect OSCAR's configured "
+                    "token budget. Reduce task scope or adjust the OmniRoute budget settings "
+                    "if more steps are necessary."
+                ),
+                "task_complete": True,
+            }
         return {
             "action": "wait",
             "seconds": 3,
@@ -537,3 +573,7 @@ VALIDATION_RULES: list[_ValidationRule] = [
     _AvoidDuplicateBrowserInstance(),
     _HardcodedPathDetector(),
 ]
+
+
+# Backward-compatible public name retained for existing integrations.
+GeminiBrain = ModelBrain

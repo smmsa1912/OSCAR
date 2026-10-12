@@ -34,6 +34,7 @@ def build_run_payload(
     memory: list[dict[str, Any]] | None = None,
     known_paths: dict[str, str] | None = None,
     cursor_position: tuple[int, int] | None = None,
+    model_budget: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Build a serializable run log payload."""
 
@@ -54,6 +55,7 @@ def build_run_payload(
         "memory": memory or [],
         "known_paths": known_paths or {},
         "cursor_position": cursor_position,
+        "model_budget": model_budget,
     })
 
 
@@ -72,6 +74,7 @@ def write_run_log(
     memory: list[dict[str, Any]] | None = None,
     known_paths: dict[str, str] | None = None,
     cursor_position: tuple[int, int] | None = None,
+    model_budget: dict[str, int] | None = None,
     logs_dir: str | Path | None = None,
 ) -> Path:
     """Persist a sanitized run log as JSON and return the path.
@@ -97,6 +100,7 @@ def write_run_log(
         memory=memory,
         known_paths=known_paths,
         cursor_position=cursor_position,
+        model_budget=model_budget,
     )
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")

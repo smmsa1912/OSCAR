@@ -21,3 +21,7 @@ Alternatively, from this `backend` directory, install with `python -m pip instal
 cd backend
 python -m uvicorn oscar.server:app --host 127.0.0.1 --port 4444
 ```
+
+## Model providers
+
+`LLM_PROVIDER=gemini` is the default. To use an OpenAI-compatible OmniRoute gateway, set `LLM_PROVIDER=omniroute`, `OMNIROUTE_BASE_URL`, and `OMNIROUTE_MODEL` in `backend/.env`; `OMNIROUTE_API_KEY` is optional for unauthenticated local endpoints. The endpoint must support `/chat/completions`, `/models`, JSON-object response mode, and image URL parts for screenshot-based planning. See the root README for the complete configuration example.

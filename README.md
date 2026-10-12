@@ -2,14 +2,14 @@
 
 <p align="center">
   <strong>A Windows-first agentic assistant that turns natural-language requests into desktop workflows.</strong><br />
-  Python orchestration · Flutter desktop UI · Gemini-powered planning
+  Python orchestration · Flutter desktop UI · configurable Gemini / OmniRoute planning
 </p>
 
 <p align="center">
   <a href="https://github.com/smmsa1912/OSCAR"><img src="https://img.shields.io/badge/Platform-Windows-0078D4?logo=windows&logoColor=white" alt="Platform: Windows" /></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Backend-Python-3776AB?logo=python&logoColor=white" alt="Backend: Python" /></a>
   <a href="https://flutter.dev/"><img src="https://img.shields.io/badge/Desktop-Flutter-02569B?logo=flutter&logoColor=white" alt="Desktop: Flutter" /></a>
-  <a href="https://ai.google.dev/"><img src="https://img.shields.io/badge/LLM-Google%20Gemini-8E75B2?logo=googlegemini&logoColor=white" alt="LLM: Google Gemini" /></a>
+  <a href="https://ai.google.dev/"><img src="https://img.shields.io/badge/LLM-Gemini%20%7C%20OmniRoute-8E75B2?logo=googlegemini&logoColor=white" alt="LLM: Gemini or OmniRoute" /></a>
 </p>
 
 ---
@@ -37,7 +37,8 @@ OSCAR/
 ├── backend/                 # Python orchestration engine and tests
 │   ├── oscar/
 │   │   ├── agents/          # Browser, UI, and terminal agents
-│   │   ├── brain/           # Planning components
+│   │   ├── brain/           # Provider-neutral planning
+│   │   ├── model_gateway.py # Gemini / OmniRoute action-model adapters
 │   │   ├── core/            # Persistent workflow memory
 │   │   ├── tools/           # Tool registry
 │   │   └── ...              # Runtime, routing, vision, and API
@@ -53,6 +54,7 @@ OSCAR/
 | Component | Role |
 | --- | --- |
 | **Planner and orchestrator** | Break down requests, organize execution, and route actions |
+| **Model gateway** | Provider-neutral action contract; Gemini default, explicit OmniRoute option |
 | **Browser agent** | Automate browser workflows with Playwright |
 | **UI agent** | Interact with desktop controls using UI and vision utilities |
 | **Terminal agent** | Execute supported terminal-oriented tasks |
@@ -63,7 +65,7 @@ OSCAR/
 
 - **Backend:** Python
 - **Desktop UI:** Flutter / Dart
-- **LLM:** Google Gemini API
+- **LLM:** Provider-neutral action-model gateway; Google Gemini by default, with an OpenAI-compatible OmniRoute option
 - **Browser automation:** Playwright
 - **Desktop interaction:** PyAutoGUI and computer-vision utilities
 - **Backend testing:** pytest
@@ -74,7 +76,7 @@ OSCAR/
 - Python 3.11–3.13 (Python 3.13 recommended; Python 3.14 is not yet supported by the pinned desktop dependencies)
 - Flutter SDK with Windows desktop support enabled and a bundled Dart SDK satisfying `desktop/pubspec.yaml` (`^3.11.1`)
 - Git
-- A Google Gemini API key
+- A Google Gemini API key when using the default `gemini` provider; an OpenAI-compatible OmniRoute endpoint and model when using `omniroute`
 
 OSCAR is primarily designed for Windows. Individual automation capabilities may depend on operating-system permissions, screen layout, installed applications, and local configuration.
 
@@ -100,7 +102,43 @@ python -m pip install -r backend\requirements.txt
 Copy-Item backend\.env.example backend\.env
 ```
 
-Open `backend/.env` and add your `GEMINI_API_KEY` and any other required configuration values. Keep API keys private, and never commit your populated `.env` file.
+Open `backend/.env` and configure the selected provider. The default `LLM_PROVIDER=gemini` requires `GEMINI_API_KEY`. Keep API keys private, and never commit your populated `.env` file.
+
+
+### Model provider configuration
+
+OSCAR uses a provider-neutral action-model interface while preserving the same planner action dictionary and screenshot/prompt contract. `LLM_PROVIDER=gemini` is the default; use `LLM_PROVIDER=omniroute` to route requests to an OpenAI-compatible OmniRoute gateway. Provider switching is explicit—OSCAR does not silently switch between Gemini and OmniRoute during a task. When OmniRoute is selected, optional role-specific model IDs support automatic model routing within the OmniRoute gateway.
+
+For OmniRoute, set these values in `backend/.env`:
+
+```dotenv
+LLM_PROVIDER=omniroute
+OMNIROUTE_BASE_URL=http://localhost:8080/v1
+OMNIROUTE_API_KEY=
+OMNIROUTE_MODEL=auto/best-fast
+OMNIROUTE_AUTO_ROUTING=true
+OMNIROUTE_MODEL_FAST=auto/best-fast
+OMNIROUTE_MODEL_REASONING=auto/best-reasoning
+OMNIROUTE_MODEL_VISION=auto/best-vision
+OMNIROUTE_MODEL_FALLBACK=auto/best-fast
+OMNIROUTE_TIMEOUT_SECONDS=45
+OMNIROUTE_MAX_PROMPT_CHARS=7000
+OMNIROUTE_MAX_OUTPUT_TOKENS=350
+OMNIROUTE_MAX_REQUEST_TOKENS=5000
+OMNIROUTE_MAX_TASK_TOKENS=20000
+OMNIROUTE_MAX_DAILY_TOKENS=30000
+OMNIROUTE_MAX_IMAGE_DIMENSION=1024
+```
+
+Gemini remains selected by default. The `auto/best-fast`, `auto/best-reasoning`, and `auto/best-vision` aliases above were present in the model list returned by the user's local OmniRoute `/models` endpoint; the names are routing hints, not guarantees about model quality or capabilities. The gateway must expose `/chat/completions` and `/models` under the configured API prefix and accept JSON-object response mode. Screenshot routing requires image-input support, so test it before using OmniRoute for desktop tasks. A configured `OMNIROUTE_MODEL_FALLBACK` is attempted once only after a transient error.
+
+**Token/cost guardrails:** OSCAR bounds prompt text to 7,000 characters, sets a 350-token output ceiling per request, estimates request size before sending, downsizes screenshots to at most 1,024 pixels on the longest side and JPEG-compresses them, and reserves a default 20,000 estimated-token budget per task plus a persistent 30,000 estimated-token daily budget across OSCAR restarts. If either budget would be exceeded, it blocks the next request; when a task hits its budget, the planner stops instead of repeatedly calling the cloud. Daily reservations are stored in `.oscar/omniroute_token_usage.json` and reset by local calendar date. If the gateway returns `usage.total_tokens`, OSCAR reconciles the estimate with that usage; otherwise it keeps the conservative reservation. These estimates are not exact billing counts and do not enforce a provider-side dollar or monthly account quota. You can lower the limits further to save tokens. `OMNIROUTE_API_KEY` is optional for a local unauthenticated gateway. Gemini uses `GEMINI_TIMEOUT_SECONDS`; OmniRoute uses `OMNIROUTE_TIMEOUT_SECONDS`.
+
+To inspect the model IDs exposed by the configured OmniRoute gateway, run this from the `backend` directory after setting the environment:
+
+```powershell
+python -c "from oscar.omniroute_client import list_omniroute_models; print([m.get('id') for m in list_omniroute_models()])"
+```
 
 ### 3. Install Flutter dependencies
 
@@ -217,4 +255,4 @@ python -m pytest backend\tests -q
 
 If installation fails, preserve the first package-resolution error and the Python version (`python --version`) before changing pins. Do not work around resolver errors by installing the whole project with `--no-deps`; that checks package metadata/building but does not validate the runtime dependency set. Playwright browser installation and Flutter Windows checks should be completed on the target Windows machine.
 
-The current Gemini client retries malformed JSON and selected transient provider errors. It does not yet enforce a hard OSCAR-level deadline around a hung synchronous SDK request; provider request timeouts are a tracked limitation for the model-gateway work.
+Gemini retries malformed JSON and selected transient provider errors. The Gemini SDK and OmniRoute HTTP request each receive a configured timeout, but live provider timeout behaviour remains unverified until tested against the actual endpoint.

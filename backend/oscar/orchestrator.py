@@ -24,6 +24,7 @@ from oscar.runtime import ActionResult
 from oscar.screen import capture_screenshot
 from oscar.system_profiler import get_system_specs
 from oscar.trace import ExecutionTrace
+from oscar.token_budget import begin_task_budget, current_task_usage, end_task_budget
 from oscar.ui_automation import capture_active_window_controls
 from oscar.utils.logging import configure_logging, get_logger, log_event
 from oscar.utils.paths import render_known_path_strings
@@ -203,6 +204,7 @@ class Orchestrator:
             visible_windows=context.visible_windows,
         )
 
+        token_budget_context = begin_task_budget(config.OMNIROUTE_MAX_TASK_TOKENS)
         try:
             for step_index in range(config.MAX_STEPS):
                 step_number = step_index + 1
@@ -429,6 +431,8 @@ class Orchestrator:
             )
             raise
         finally:
+            token_usage_summary = current_task_usage()
+            end_task_budget(token_budget_context)
             # Each cleanup step is isolated: a memory or trace write failure must
             # not prevent the remaining diagnostics and UI finalization from running.
             try:
@@ -463,6 +467,7 @@ class Orchestrator:
                     memory=memory.get_recent_steps(config.MAX_STEPS),
                     known_paths=render_known_path_strings(),
                     cursor_position=get_cursor_position(),  # sync is fine here — outside event loop
+                    model_budget=token_usage_summary,
                 )
             except Exception as exc:
                 finalization_failures.append("run_log")
@@ -483,6 +488,7 @@ class Orchestrator:
                 log_path=str(log_path) if log_path is not None else None,
                 trace_path=str(trace_path) if trace_path is not None else None,
                 finalization_failures=list(finalization_failures),
+                model_budget=token_usage_summary,
             )
             await self._restore_ui_host_focus(ui_callback)
 

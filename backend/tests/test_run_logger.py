@@ -91,3 +91,24 @@ def test_write_run_log_bounds_long_diagnostic_strings(tmp_path) -> None:
     payload = json.loads(log_path.read_text(encoding="utf-8"))
     assert len(payload["task"]) < 8100
     assert payload["task"].endswith("…[truncated]")
+
+
+
+def test_write_run_log_records_token_budget_summary(tmp_path) -> None:
+    log_path = write_run_log(
+        task="A bounded cloud task",
+        history=[],
+        started_at="2026-10-12T10:00:00+00:00",
+        finished_at="2026-10-12T10:00:01+00:00",
+        status="completed",
+        model_budget={
+            "estimated_units_used": 4200,
+            "budget_units": 30000,
+            "request_count": 2,
+        },
+        logs_dir=tmp_path / "logs",
+    )
+    payload = json.loads(log_path.read_text(encoding="utf-8"))
+    assert payload["model_budget"]["estimated_units_used"] == 4200
+    assert payload["model_budget"]["budget_units"] == 30000
+    assert payload["model_budget"]["request_count"] == 2

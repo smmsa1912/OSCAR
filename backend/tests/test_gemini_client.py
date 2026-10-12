@@ -39,9 +39,11 @@ class FakeModel:
     def __init__(self, responses: list[str]) -> None:
         self._responses = list(responses)
         self.calls: list[list[object]] = []
+        self.request_options: list[object] = []
 
-    def generate_content(self, parts: list[object]) -> FakeResponse:
+    def generate_content(self, parts: list[object], request_options=None) -> FakeResponse:
         self.calls.append(parts)
+        self.request_options.append(request_options)
         return FakeResponse(self._responses.pop(0))
 
 
@@ -49,7 +51,7 @@ class FakeFailingModel:
     def __init__(self, error_message: str = "boom") -> None:
         self.error_message = error_message
 
-    def generate_content(self, parts: list[object]) -> FakeResponse:
+    def generate_content(self, parts: list[object], request_options=None) -> FakeResponse:
         raise RuntimeError(self.error_message)
 
 
@@ -118,14 +120,19 @@ class FakeModernModels:
 
 
 class FakeModernClient:
-    def __init__(self, responses: list[str], api_key: str) -> None:
+    def __init__(self, responses: list[str], api_key: str, http_options=None) -> None:
         self.api_key = api_key
+        self.http_options = http_options
         self.models = FakeModernModels(responses)
 
 
 class FakeModernTypes:
     @staticmethod
     def GenerateContentConfig(**kwargs):
+        return kwargs
+
+    @staticmethod
+    def HttpOptions(**kwargs):
         return kwargs
 
 
@@ -136,8 +143,8 @@ class FakeModernGenAI:
         self.responses = responses
         self.client: FakeModernClient | None = None
 
-    def Client(self, *, api_key: str) -> FakeModernClient:
-        self.client = FakeModernClient(self.responses, api_key)
+    def Client(self, *, api_key: str, http_options=None) -> FakeModernClient:
+        self.client = FakeModernClient(self.responses, api_key, http_options)
         return self.client
 
 
@@ -184,6 +191,7 @@ def test_ask_gemini_supports_google_genai_client(
     assert fake_genai.client.models.calls[0]["model"] == "gemini-2.5-flash"
     assert fake_genai.client.models.calls[0]["contents"][0] == "Take the next step."
     assert fake_genai.client.models.calls[0]["config"]["response_mime_type"] == "application/json"
+    assert fake_genai.client.http_options == {"timeout": 60000}
 
 
 def test_ask_gemini_allows_prompt_only_requests(
@@ -356,3 +364,13 @@ def test_ask_gemini_does_not_retry_timeout_without_explicit_timeout_policy() -> 
         )
 
     assert calls["count"] == 1
+
+
+def test_legacy_gemini_sdk_receives_request_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_genai = FakeGenAI(['{"action":"done","task_complete":true}'])
+    monkeypatch.setattr("oscar.gemini_client._load_genai", lambda: fake_genai)
+    monkeypatch.setattr("oscar.gemini_client.config.GEMINI_TIMEOUT_SECONDS", 17.0)
+
+    ask_gemini(None, "Finish.", api_key="secret")
+
+    assert fake_genai.model.request_options == [{"timeout": 17.0}]

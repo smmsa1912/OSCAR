@@ -86,10 +86,17 @@ def _build_model_backend(
     model_name: str,
     temperature: float,
     system_prompt: str,
+    timeout_seconds: float,
 ):
     if hasattr(genai, "Client"):
         try:
-            client = genai.Client(api_key=api_key)
+            types_module = getattr(genai, "types", None)
+            client_kwargs: dict[str, Any] = {"api_key": api_key}
+            if types_module is not None and hasattr(types_module, "HttpOptions"):
+                client_kwargs["http_options"] = types_module.HttpOptions(
+                    timeout=int(timeout_seconds * 1000)
+                )
+            client = genai.Client(**client_kwargs)
             generation_config = _build_new_sdk_config(
                 genai,
                 system_prompt=system_prompt,
@@ -131,7 +138,8 @@ def _build_model_backend(
             lambda prompt, screenshot: model.generate_content(
                 [prompt]
                 if screenshot is None
-                else [prompt, _build_legacy_image_part(screenshot)]
+                else [prompt, _build_legacy_image_part(screenshot)],
+                request_options={"timeout": timeout_seconds},
             ),
         )
 
@@ -316,6 +324,7 @@ def ask_gemini(
         model_name=resolved_model,
         temperature=temperature,
         system_prompt=SYSTEM_PROMPT,
+        timeout_seconds=config.GEMINI_TIMEOUT_SECONDS,
     )
 
     try:
