@@ -201,11 +201,28 @@ def ask_omniroute(
         "response_format": {"type": "json_object"},
     }
     endpoint = _endpoint(config.OMNIROUTE_BASE_URL, "/chat/completions")
-    body = _request_json(endpoint, method="POST", payload=payload, timeout=timeout)
+    try:
+        body = _request_json(endpoint, method="POST", payload=payload, timeout=timeout)
+    except Exception:
+        # Keep the conservative reservation and make its status visible in the
+        # local ledger; a failed response is not proof the gateway did not bill.
+        settle_request(
+            reservation, None, model_name=model, outcome="failed_or_unknown"
+        )
+        raise
     usage = body.get("usage")
     actual_tokens = usage.get("total_tokens") if isinstance(usage, dict) else None
-    if isinstance(actual_tokens, int):
-        settle_request(reservation, actual_tokens)
+    if not isinstance(actual_tokens, int) or actual_tokens <= 0:
+        prompt_tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None
+        completion_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
+        if (
+            isinstance(prompt_tokens, int) and prompt_tokens > 0
+            and isinstance(completion_tokens, int) and completion_tokens >= 0
+        ):
+            actual_tokens = prompt_tokens + completion_tokens
+        else:
+            actual_tokens = None
+    settle_request(reservation, actual_tokens, model_name=model, outcome="success")
     try:
         content = body["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:

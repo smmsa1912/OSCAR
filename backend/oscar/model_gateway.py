@@ -151,6 +151,48 @@ class OmniRouteGateway:
             ) from exc
 
 
+
+class FreeLLMAPIGateway:
+    """Direct OpenAI-compatible gateway to the user's local FreeLLMAPI proxy."""
+
+    provider_name = "freellmapi"
+
+    def __init__(self) -> None:
+        self.default_model = config.FREELLMAPI_MODEL
+
+    @staticmethod
+    def select_model(screenshot: Any | None, prompt: str) -> str:
+        # Delegate automatic routing to FreeLLMAPI itself. Its active chain has
+        # vision-capable models; a role-specific setting can pin vision if desired.
+        if screenshot is not None:
+            return config.FREELLMAPI_VISION_MODEL or config.FREELLMAPI_MODEL
+        return config.FREELLMAPI_MODEL
+
+    def generate_action(
+        self,
+        screenshot: Any | None,
+        prompt: str,
+        *,
+        model_name: str | None = None,
+    ) -> dict[str, Any]:
+        from oscar.freellmapi_client import FreeLLMAPIResponseError, ask_freellmapi
+
+        selected_model = model_name or self.select_model(screenshot, prompt)
+        try:
+            return ask_freellmapi(screenshot, prompt, model_name=selected_model)
+        except Exception as exc:
+            retryable = bool(getattr(exc, "retryable", False))
+            status_code = getattr(exc, "status_code", None)
+            message = str(exc) if isinstance(
+                exc, (FreeLLMAPIResponseError, TokenBudgetExceeded)
+            ) else f"{exc.__class__.__name__} while requesting FreeLLMAPI."
+            raise ModelGatewayError(
+                self.provider_name,
+                message,
+                retryable=retryable,
+                status_code=status_code,
+            ) from exc
+
 def create_model_gateway(provider_name: str | None = None) -> ActionModelGateway:
     """Create the explicitly configured provider adapter."""
     selected = (provider_name or config.LLM_PROVIDER).strip().lower()
@@ -158,6 +200,8 @@ def create_model_gateway(provider_name: str | None = None) -> ActionModelGateway
         return GeminiGateway()
     if selected == "omniroute":
         return OmniRouteGateway()
+    if selected == "freellmapi":
+        return FreeLLMAPIGateway()
     raise ValueError(
-        f"Unsupported LLM_PROVIDER {selected!r}; choose 'gemini' or 'omniroute'."
+        f"Unsupported LLM_PROVIDER {selected!r}; choose 'gemini', 'omniroute', or 'freellmapi'."
     )

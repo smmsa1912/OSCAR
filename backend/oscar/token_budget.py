@@ -60,49 +60,109 @@ def _daily_usage_path() -> Path:
     return Path(config.STATE_DIR) / "omniroute_token_usage.json"
 
 
-def _read_daily_usage(path: Path, today: str) -> int:
+def _default_daily_record(today: str) -> dict[str, object]:
+    return {
+        "date": today,
+        # Effective budget units: provider-reported usage when available, otherwise
+        # conservative reservations. This legacy key remains for backwards compatibility.
+        "estimated_tokens": 0,
+        "request_count": 0,
+        "provider_reported_tokens": 0,
+        "provider_reported_requests": 0,
+        "estimated_only_requests": 0,
+        "failed_or_unknown_requests": 0,
+        "last_model": None,
+        "last_usage_source": None,
+    }
+
+
+def _read_daily_record(path: Path, today: str) -> dict[str, object]:
+    record = _default_daily_record(today)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            return 0
-        if data.get("date") == today:
-            value = data.get("estimated_tokens", 0)
-            return max(0, int(value))
+        if not isinstance(data, dict) or data.get("date") != today:
+            return record
+        record.update(data)
+        # Ensure old ledgers get safe defaults for fields added in this version.
+        for key, value in _default_daily_record(today).items():
+            record.setdefault(key, value)
+        record["estimated_tokens"] = max(0, int(record.get("estimated_tokens", 0)))
+        return record
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
-        pass
-    return 0
+        return record
+
+
+def _read_daily_usage(path: Path, today: str) -> int:
+    return int(_read_daily_record(path, today)["estimated_tokens"])
+
+
+def _write_daily_record(path: Path, record: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    os.replace(temporary, path)
 
 
 def _write_daily_usage(path: Path, today: str, amount: int) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(
-        json.dumps({"date": today, "estimated_tokens": max(0, amount)}, indent=2),
-        encoding="utf-8",
-    )
-    os.replace(temporary, path)
+    record = _read_daily_record(path, today)
+    record["estimated_tokens"] = max(0, amount)
+    _write_daily_record(path, record)
 
 
 def _reserve_daily_tokens(amount: int) -> None:
     today = date.today().isoformat()
     path = _daily_usage_path()
     with _daily_lock:
-        used = _read_daily_usage(path, today)
+        record = _read_daily_record(path, today)
+        used = int(record["estimated_tokens"])
         limit = config.OMNIROUTE_MAX_DAILY_TOKENS
         if used + amount > limit:
             raise TokenBudgetExceeded(
                 "OSCAR blocked the cloud request because today's configured OmniRoute "
                 f"token budget ({limit} estimated tokens) would be exceeded."
             )
-        _write_daily_usage(path, today, used + amount)
+        record["estimated_tokens"] = used + amount
+        record["request_count"] = int(record.get("request_count", 0)) + 1
+        _write_daily_record(path, record)
 
 
-def _settle_daily_tokens(reserved: int, actual: int) -> None:
+def _settle_daily_tokens(
+    reserved: int,
+    actual: int | None,
+    *,
+    model_name: str | None,
+    outcome: str,
+) -> None:
     today = date.today().isoformat()
     path = _daily_usage_path()
     with _daily_lock:
-        used = _read_daily_usage(path, today)
-        _write_daily_usage(path, today, max(0, used - reserved + actual))
+        record = _read_daily_record(path, today)
+        used = int(record["estimated_tokens"])
+        if actual is not None and actual > 0:
+            record["estimated_tokens"] = max(0, used - reserved + actual)
+            record["provider_reported_tokens"] = (
+                int(record.get("provider_reported_tokens", 0)) + actual
+            )
+            record["provider_reported_requests"] = (
+                int(record.get("provider_reported_requests", 0)) + 1
+            )
+            record["last_usage_source"] = "provider_reported"
+        elif outcome == "success":
+            # Keep the reservation as the budget charge, since no reliable usage
+            # count was returned. Do not pretend the reservation is actual usage.
+            record["estimated_only_requests"] = (
+                int(record.get("estimated_only_requests", 0)) + 1
+            )
+            record["last_usage_source"] = "estimated_reservation_no_provider_usage"
+        else:
+            # Conservatively retain the reservation: some gateways bill failed calls.
+            record["failed_or_unknown_requests"] = (
+                int(record.get("failed_or_unknown_requests", 0)) + 1
+            )
+            record["last_usage_source"] = "estimated_reservation_failed_or_unknown"
+        if model_name:
+            record["last_model"] = model_name
+        _write_daily_record(path, record)
 
 
 def reserve_request(input_tokens: int, output_tokens: int) -> TokenReservation:
@@ -127,19 +187,28 @@ def reserve_request(input_tokens: int, output_tokens: int) -> TokenReservation:
     )
 
 
-def settle_request(reservation: TokenReservation, actual_tokens: int | None) -> None:
-    """Replace a worst-case reservation with provider-reported usage when available."""
-    if actual_tokens is None or actual_tokens <= 0:
-        return
-    if reservation.budget is not None:
+def settle_request(
+    reservation: TokenReservation,
+    actual_tokens: int | None,
+    *,
+    model_name: str | None = None,
+    outcome: str = "success",
+) -> None:
+    """Reconcile reservations with usage metadata, while recording estimate-only calls."""
+    actual = actual_tokens if isinstance(actual_tokens, int) and actual_tokens > 0 else None
+    if actual is not None and reservation.budget is not None:
         reservation.budget.reserved_or_used = max(
             0,
             reservation.budget.reserved_or_used
             - reservation.reserved_tokens
-            + actual_tokens,
+            + actual,
         )
-    _settle_daily_tokens(reservation.daily_reserved_tokens, actual_tokens)
-
+    _settle_daily_tokens(
+        reservation.daily_reserved_tokens,
+        actual,
+        model_name=model_name,
+        outcome=outcome,
+    )
 
 def current_task_usage() -> dict[str, int] | None:
     """Return non-sensitive budget telemetry for UI/log summaries."""

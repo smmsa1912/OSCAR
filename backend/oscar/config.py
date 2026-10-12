@@ -148,14 +148,26 @@ def _enable_pyautogui_failsafe() -> None:
 
 
 LLM_PROVIDER = (os.getenv("LLM_PROVIDER", "gemini").strip() or "gemini").lower()
-if LLM_PROVIDER not in {"gemini", "omniroute"}:
-    raise ValueError("LLM_PROVIDER must be either 'gemini' or 'omniroute'.")
+if LLM_PROVIDER not in {"gemini", "omniroute", "freellmapi"}:
+    raise ValueError("LLM_PROVIDER must be one of 'gemini', 'omniroute', or 'freellmapi'.")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = (
     os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
 )
 GEMINI_TIMEOUT_SECONDS = _parse_float(
     "GEMINI_TIMEOUT_SECONDS", 60.0, minimum=0.1, maximum=600
+)
+# Direct FreeLLMAPI OpenAI-compatible endpoint. This is independent of OmniRoute.
+FREELLMAPI_BASE_URL = (
+    os.getenv("FREELLMAPI_BASE_URL", "http://127.0.0.1:31415/v1").strip().rstrip("/")
+    or "http://127.0.0.1:31415/v1"
+)
+FREELLMAPI_API_KEY = os.getenv("FREELLMAPI_API_KEY", "").strip()
+FREELLMAPI_MODEL = os.getenv("FREELLMAPI_MODEL", "auto").strip() or "auto"
+# FreeLLMAPI's own `auto` router chooses from its active chain, which includes vision models.
+FREELLMAPI_VISION_MODEL = os.getenv("FREELLMAPI_VISION_MODEL", "auto").strip() or "auto"
+FREELLMAPI_TIMEOUT_SECONDS = _parse_float(
+    "FREELLMAPI_TIMEOUT_SECONDS", 45.0, minimum=0.1, maximum=600
 )
 OMNIROUTE_BASE_URL = (
     os.getenv("OMNIROUTE_BASE_URL", "").strip().rstrip("/")

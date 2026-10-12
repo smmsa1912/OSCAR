@@ -12,6 +12,7 @@ def _reload_config(monkeypatch: pytest.MonkeyPatch, **env: str):
         "GEMINI_MODEL",
         "LLM_PROVIDER",
         "GEMINI_TIMEOUT_SECONDS",
+        "FREELLMAPI_BASE_URL", "FREELLMAPI_API_KEY", "FREELLMAPI_MODEL", "FREELLMAPI_VISION_MODEL", "FREELLMAPI_TIMEOUT_SECONDS",
         "OMNIROUTE_BASE_URL",
         "OMNIROUTE_API_KEY",
         "OMNIROUTE_MODEL",
@@ -233,5 +234,5 @@ def test_config_rejects_retry_max_below_initial(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_config_rejects_unknown_llm_provider(monkeypatch: pytest.MonkeyPatch) -> None:
-    with pytest.raises(ValueError, match="LLM_PROVIDER must be either"):
+    with pytest.raises(ValueError, match="LLM_PROVIDER must be one of"):
         _reload_config(monkeypatch, LLM_PROVIDER="unknown-provider")

@@ -6,6 +6,7 @@ from oscar import config
 from oscar.brain.planner import GeminiBrain, ModelBrain
 from oscar.model_gateway import (
     GeminiGateway,
+    FreeLLMAPIGateway,
     ModelGatewayError,
     OmniRouteGateway,
     create_model_gateway,
@@ -204,3 +205,31 @@ def test_omniroute_preserves_token_budget_error_and_does_not_fallback(
     with pytest.raises(ModelGatewayError, match="token budget"):
         OmniRouteGateway().generate_action(None, "Open settings")
     assert seen == ["request"]
+
+
+def test_configured_gateway_can_select_freellmapi(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "LLM_PROVIDER", "freellmapi")
+    monkeypatch.setattr(config, "FREELLMAPI_MODEL", "auto")
+    gateway = create_model_gateway()
+    assert isinstance(gateway, FreeLLMAPIGateway)
+    assert gateway.default_model == "auto"
+
+
+def test_freellmapi_uses_its_configured_vision_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "FREELLMAPI_MODEL", "auto")
+    monkeypatch.setattr(config, "FREELLMAPI_VISION_MODEL", "qwen/qwen3.8-27b")
+    assert FreeLLMAPIGateway.select_model(object(), "Inspect image") == "qwen/qwen3.8-27b"
+    assert FreeLLMAPIGateway.select_model(None, "Open settings") == "auto"
+
+
+def test_freellmapi_gateway_passes_selected_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    from oscar import freellmapi_client
+    seen: list[str | None] = []
+    monkeypatch.setattr(
+        freellmapi_client,
+        "ask_freellmapi",
+        lambda _image, _prompt, *, model_name=None: seen.append(model_name) or {"action": "wait"},
+    )
+    result = FreeLLMAPIGateway().generate_action(None, "Open settings")
+    assert result == {"action": "wait"}
+    assert seen == ["auto"]

@@ -198,3 +198,50 @@ def test_screenshot_is_resized_and_jpeg_compressed(monkeypatch: pytest.MonkeyPat
     with Image.open(io.BytesIO(base64.b64decode(encoded))) as compressed:
         assert compressed.size == (1024, 768)
         assert compressed.format == "JPEG"
+
+
+
+def test_usage_metadata_reconciles_daily_ledger_and_records_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from oscar import token_budget
+
+    def fake_urlopen(request, timeout):
+        payload = json.loads(request.data.decode())
+        return FakeResponse({
+            "choices": [{"message": {"content": '{"action":"done","task_complete":true}'}}],
+            "usage": {"prompt_tokens": 90, "completion_tokens": 33, "total_tokens": 123},
+        })
+
+    monkeypatch.setattr(config, "OMNIROUTE_BASE_URL", "http://localhost:8080/v1")
+    monkeypatch.setattr(config, "OMNIROUTE_MODEL", "test-model")
+    monkeypatch.setattr("oscar.omniroute_client.urllib.request.urlopen", fake_urlopen)
+
+    assert ask_omniroute(None, "Do one small thing.")["action"] == "done"
+    ledger = json.loads((tmp_path / "omniroute_token_usage.json").read_text(encoding="utf-8"))
+    assert ledger["estimated_tokens"] == 123
+    assert ledger["provider_reported_tokens"] == 123
+    assert ledger["provider_reported_requests"] == 1
+    assert ledger["last_model"] == "test-model"
+    assert ledger["last_usage_source"] == "provider_reported"
+
+
+def test_missing_usage_metadata_is_reported_as_estimate_not_actual(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    def fake_urlopen(request, timeout):
+        return FakeResponse({
+            "choices": [{"message": {"content": '{"action":"wait","seconds":1}'}}],
+        })
+
+    monkeypatch.setattr(config, "OMNIROUTE_BASE_URL", "http://localhost:8080/v1")
+    monkeypatch.setattr(config, "OMNIROUTE_MODEL", "auto/best-fast")
+    monkeypatch.setattr("oscar.omniroute_client.urllib.request.urlopen", fake_urlopen)
+
+    assert ask_omniroute(None, "Short test.")["action"] == "wait"
+    ledger = json.loads((tmp_path / "omniroute_token_usage.json").read_text(encoding="utf-8"))
+    assert ledger["estimated_tokens"] > 0
+    assert ledger["provider_reported_tokens"] == 0
+    assert ledger["estimated_only_requests"] == 1
+    assert ledger["last_model"] == "auto/best-fast"
+    assert ledger["last_usage_source"] == "estimated_reservation_no_provider_usage"
