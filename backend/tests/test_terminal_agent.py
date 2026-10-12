@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -222,3 +223,220 @@ async def test_terminal_agent_allows_safe_desktop_delete_with_env_var_path(
 
     assert result.success is True
     assert result.data["deleted_paths"] == [str(target)]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "command",
+    [
+        "shutdown /s /t 0",
+        "git reset --hard",
+        "git clean -fdx",
+        "format C:",
+        "Stop-Computer",
+    ],
+)
+async def test_terminal_agent_blocks_dangerous_commands_before_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    command: str,
+) -> None:
+    agent = TerminalAgent(root_dir=tmp_path)
+    subprocess_called = False
+
+    async def forbidden_subprocess(*args, **kwargs):
+        nonlocal subprocess_called
+        subprocess_called = True
+        raise AssertionError("Blocked commands must not reach subprocess execution.")
+
+    monkeypatch.setattr(
+        "oscar.agents.terminal_agent.asyncio.create_subprocess_exec",
+        forbidden_subprocess,
+    )
+
+    result = await agent.run(
+        {"action": "terminal_command", "command": command},
+        str(tmp_path),
+    )
+
+    assert result.success is False
+    assert "Blocked unsafe terminal command" in (result.failure_reason or "")
+    assert subprocess_called is False
+
+
+def test_terminal_agent_rejects_paths_outside_allowed_roots(tmp_path: Path) -> None:
+    agent = TerminalAgent(root_dir=tmp_path)
+    # pytest's temp directory is itself an explicitly allowed root, so a sibling
+    # under tmp_path.parent is not actually outside policy. Use the filesystem root.
+    outside = Path(tmp_path.anchor) / "oscar-outside-root.txt"
+
+    command = f"Set-Content -LiteralPath '{outside}' -Value 'not allowed'"
+
+    assert agent._is_safe_command(command, tmp_path) is False
+
+
+def test_terminal_agent_truncates_output_to_configured_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("oscar.agents.terminal_agent.config.TERMINAL_OUTPUT_LIMIT", 8)
+
+    result = TerminalAgent()._truncate_output("  1234567890  ")
+
+    assert result == "12345678\n...[truncated]"
+
+
+@pytest.mark.anyio
+async def test_terminal_agent_times_out_and_terminates_process(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    agent = TerminalAgent(root_dir=tmp_path)
+
+    class FakeProcess:
+        returncode = None
+        killed = False
+        waited = False
+
+        async def communicate(self):
+            raise asyncio.TimeoutError
+
+        def kill(self):
+            self.killed = True
+            self.returncode = -9
+
+        async def wait(self):
+            self.waited = True
+            return self.returncode
+
+    process = FakeProcess()
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return process
+
+    async def fake_wait_for(awaitable, timeout):
+        # Match asyncio.wait_for cancellation behavior and avoid an un-awaited coroutine.
+        awaitable.close()
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(
+        "oscar.agents.terminal_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(
+        "oscar.agents.terminal_agent.asyncio.wait_for",
+        fake_wait_for,
+    )
+
+    result = await agent.run(
+        {"action": "terminal_command", "command": "Get-Location"},
+        str(tmp_path),
+    )
+
+    assert result.success is False
+    assert "timed out" in (result.failure_reason or "").lower()
+    assert process.killed is True
+    assert process.waited is True
+
+
+@pytest.mark.anyio
+async def test_arbitrary_command_requires_confirmation_and_is_not_executed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    agent = TerminalAgent(root_dir=tmp_path)
+    subprocess_called = False
+
+    async def forbidden_subprocess(*args, **kwargs):
+        nonlocal subprocess_called
+        subprocess_called = True
+        raise AssertionError("Command must not execute before confirmation")
+
+    monkeypatch.setattr(
+        "oscar.agents.terminal_agent.asyncio.create_subprocess_exec",
+        forbidden_subprocess,
+    )
+    result = await agent.run(
+        {
+            "action": "terminal_command",
+            "command": "python -c \"print('hello')\"",
+            # A model-generated field must never count as user approval.
+            "user_confirmed": True,
+        },
+        str(tmp_path),
+    )
+
+    assert result.success is False
+    assert result.data["requires_confirmation"] is True
+    assert result.data["pending_command"] == "python -c \"print('hello')\""
+    assert subprocess_called is False
+
+
+@pytest.mark.anyio
+async def test_arbitrary_command_runs_only_after_trusted_confirmation_callback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, Path]] = []
+
+    async def approve(command: str, cwd: Path) -> bool:
+        calls.append((command, cwd))
+        return True
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return (b"ok", b"")
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        "oscar.agents.terminal_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(
+        "oscar.agents.terminal_agent.asyncio.wait_for",
+        lambda coro, timeout: coro,
+    )
+    times = iter([0.0, 0.01])
+    monkeypatch.setattr(
+        "oscar.agents.terminal_agent.asyncio.get_running_loop",
+        lambda: type("Loop", (), {"time": staticmethod(lambda: next(times))})(),
+    )
+
+    command = "python -c \"print('hello')\""
+    result = await TerminalAgent(
+        root_dir=tmp_path, confirmation_callback=approve
+    ).run({"action": "terminal_command", "command": command}, str(tmp_path))
+
+    assert result.success is True
+    assert calls == [(command, tmp_path.resolve())]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "Get-Location; Remove-Item -LiteralPath 'important.txt' -Force",
+        "Get-ChildItem | Invoke-Expression",
+        "python -c \"import os; os.remove('important.txt')\"",
+    ],
+)
+def test_compound_or_interpreter_commands_are_not_allowlisted(
+    tmp_path: Path,
+    command: str,
+) -> None:
+    assert TerminalAgent(root_dir=tmp_path)._is_allowlisted_command(command) is False
+
+
+def test_read_command_with_path_outside_allowed_roots_requires_confirmation(
+    tmp_path: Path,
+) -> None:
+    agent = TerminalAgent(root_dir=tmp_path)
+
+    assert agent._is_allowlisted_command(
+        'Get-Content -LiteralPath "C:\\Windows\\win.ini"', tmp_path
+    ) is False
+    assert agent._is_allowlisted_command(
+        'Get-ChildItem "C:\\Windows"', tmp_path
+    ) is False

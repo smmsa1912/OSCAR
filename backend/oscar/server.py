@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from oscar.orchestrator import Orchestrator
+from oscar.diagnostics import sanitize_text
 from oscar.utils.logging import configure_logging, get_logger
 
 
@@ -141,14 +143,25 @@ async def oscar_websocket(websocket: WebSocket) -> None:
             )
             raise
         except Exception as exc:
-            LOGGER.exception("OSCAR task failed.")
+            error_id = uuid.uuid4().hex[:12]
+            # Keep raw exception messages and tracebacks out of the client-facing
+            # event and ordinary logs; provider exceptions may contain secrets.
+            LOGGER.error(
+                "OSCAR task failed (error_id=%s, error_type=%s, detail=%s)",
+                error_id,
+                type(exc).__name__,
+                sanitize_text(str(exc)) or "(no details)",
+            )
             await send_json(
                 {
                     "type": "server_error",
                     "status": "error",
                     "task": task,
-                    "error": str(exc),
-                    "error_type": exc.__class__.__name__,
+                    "error": (
+                        "Task failed unexpectedly. "
+                        "Check local OSCAR logs using the error ID."
+                    ),
+                    "error_id": error_id,
                 }
             )
             continue

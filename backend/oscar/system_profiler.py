@@ -7,6 +7,11 @@ import platform
 import subprocess
 from typing import Any
 
+try:
+    import psutil
+except ImportError:  # Keep profiling available when optional system metrics are unavailable.
+    psutil = None  # type: ignore[assignment]
+
 
 
 def _first_data_line(output: str) -> str | None:
@@ -103,7 +108,8 @@ def get_system_specs() -> dict[str, Any]:
     """Return a cached hardware/software snapshot for prompt guidance."""
 
     try:
-        import psutil
+        if psutil is None:
+            raise RuntimeError("psutil is not installed")
         total_ram = _format_ram(int(psutil.virtual_memory().total))
     except Exception:
         total_ram = "Unknown"

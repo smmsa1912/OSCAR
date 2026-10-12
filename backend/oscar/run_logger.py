@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from oscar import config
+from oscar.diagnostics import sanitize_for_log
 
 
 def _serialize_timestamp(value: datetime | str) -> str:
@@ -36,7 +37,7 @@ def build_run_payload(
 ) -> dict[str, Any]:
     """Build a serializable run log payload."""
 
-    return {
+    return sanitize_for_log({
         "task": task,
         "started_at": _serialize_timestamp(started_at),
         "finished_at": _serialize_timestamp(finished_at),
@@ -53,7 +54,7 @@ def build_run_payload(
         "memory": memory or [],
         "known_paths": known_paths or {},
         "cursor_position": cursor_position,
-    }
+    })
 
 
 def write_run_log(
@@ -73,7 +74,11 @@ def write_run_log(
     cursor_position: tuple[int, int] | None = None,
     logs_dir: str | Path | None = None,
 ) -> Path:
-    """Persist a run log as JSON and return the path."""
+    """Persist a sanitized run log as JSON and return the path.
+
+    Common credential formats are redacted by ``build_run_payload`` before
+    serialization. Callers should still avoid placing secrets in task text.
+    """
 
     target_dir = Path(logs_dir) if logs_dir is not None else config.LOGS_DIR
     target_dir.mkdir(parents=True, exist_ok=True)

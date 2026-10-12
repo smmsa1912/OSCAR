@@ -9,8 +9,8 @@ import shlex
 import shutil
 import sys
 from contextlib import suppress
-from pathlib import Path
-from typing import Any
+from pathlib import Path, PureWindowsPath
+from typing import Any, Awaitable, Callable
 
 from oscar import config
 from oscar.runtime import ActionResult
@@ -45,8 +45,16 @@ _SAFE_POWERSHELL_FORMAT_CMDLETS = {
 class TerminalAgent:
     """Execute safe shell commands asynchronously with cwd tracking."""
 
-    def __init__(self, *, root_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        root_dir: Path | None = None,
+        confirmation_callback: Callable[[str, Path], bool | Awaitable[bool]] | None = None,
+    ) -> None:
         self.root_dir = (root_dir or Path.cwd()).resolve()
+        # This callback must be wired to a trusted UI/API approval flow. Never
+        # infer approval from a model-generated action field.
+        self.confirmation_callback = confirmation_callback
 
     async def run(self, action: dict[str, Any], current_cwd: str) -> ActionResult:
         command = self._normalize_user_path_text(str(action.get("command") or "")).strip()
@@ -63,6 +71,8 @@ class TerminalAgent:
                 failure_reason="Terminal command cannot be empty.",
                 retryable=False,
             )
+        # Hard-block known destructive root commands and commands targeting
+        # paths outside allowed roots regardless of any approval callback.
         if not self._is_safe_command(command, cwd):
             return ActionResult(
                 success=False,
@@ -71,6 +81,34 @@ class TerminalAgent:
                 failure_reason=f"Blocked unsafe terminal command: {command}",
                 retryable=False,
             )
+
+        if not self._is_allowlisted_command(command, cwd):
+            approved = False
+            if self.confirmation_callback is not None:
+                try:
+                    approval = self.confirmation_callback(command, cwd)
+                    if asyncio.iscoroutine(approval) or isinstance(approval, Awaitable):
+                        approval = await approval
+                    approved = approval is True
+                except Exception:
+                    approved = False
+            if not approved:
+                return ActionResult(
+                    success=False,
+                    route="terminal",
+                    action="terminal_command",
+                    confidence=1.0,
+                    failure_reason=(
+                        "This terminal command requires explicit user confirmation. "
+                        "No command was executed."
+                    ),
+                    retryable=False,
+                    data={
+                        "requires_confirmation": True,
+                        "pending_command": command,
+                        "cwd": str(cwd),
+                    },
+                )
         if not cwd.exists() or not cwd.is_dir():
             return ActionResult(
                 success=False,
@@ -232,7 +270,10 @@ class TerminalAgent:
         return self._expand_powershell_env_vars(normalized)
 
     def _resolve_directory(self, value: str, *, base: Path) -> Path:
-        candidate = Path(self._normalize_user_path_text(value)).expanduser()
+        normalized = self._normalize_user_path_text(value).strip().strip("\"'")
+        if os.name != "nt" and not PureWindowsPath(normalized).drive:
+            normalized = normalized.replace("\\", os.sep)
+        candidate = Path(normalized).expanduser()
         if not candidate.is_absolute():
             candidate = (base / candidate).resolve()
         return candidate
@@ -264,6 +305,52 @@ class TerminalAgent:
             return False
         return True
 
+    def _is_allowlisted_command(self, command: str, cwd: Path | None = None) -> bool:
+        """Return whether a command belongs to the conservative no-prompt set.
+
+        This is intentionally not a general PowerShell parser. Commands outside
+        this narrow set require a trusted confirmation callback; model-provided
+        booleans or strings are never treated as proof of user approval.
+        """
+        normalized = command.strip()
+        root = self._root_command(normalized)
+        if root in {"get-location", "pwd"}:
+            # Current-directory inspection is read-only and has no target path.
+            return len(normalized.split()) == 1
+
+        if root in {"get-childitem", "ls"}:
+            # Explicit target paths require confirmation until parsed structurally.
+            return len(normalized.split()) == 1
+
+        if root in {"test-path", "get-content"}:
+            # File inspection must name a quoted path inside an approved root.
+            pattern = r'(?is)(?:Test-Path|Get-Content)\s+(?:-LiteralPath|-Path)\s+"(.*?)"'
+            match = re.fullmatch(pattern, normalized)
+            if match is None:
+                return False
+            target = self._resolve_shell_path(match.group(1), cwd or self.root_dir)
+            return self._is_allowed_path(target)
+        # Safe, scoped file operations are allowed when existing path checks
+        # prove every extracted target stays within approved roots.
+        if root in {"set-content", "new-item", "remove-item", "del", "touch", "mkdir", "rm"}:
+            if re.search(r"[;`]|&&|\|\||\$\(|\b(?:invoke-expression|iex|start-process)\b", normalized, re.I):
+                # PowerShell's Out-Null pipe is only accepted for known New-Item
+                # file/directory aliases; arbitrary pipelines need confirmation.
+                if not re.fullmatch(
+                    r"(?is)(?:New-Item\s+-ItemType\s+(?:File|Directory)\s+-Path\s+.+?\s+-Force\s*\|\s*Out-Null)",
+                    normalized,
+                ):
+                    return False
+            return True
+
+        # Existing guarded delete idiom is allowed only in its exact shape.
+        if re.fullmatch(
+            r"(?is)if\s*\(\s*Test-Path\s+-LiteralPath\s+(['\"]).+?\1\s*\)\s*\{\s*Remove-Item\s+-LiteralPath\s+(['\"]).+?\2\s+-Force\s*\}",
+            normalized,
+        ):
+            return True
+        return False
+
     def _root_command(self, command: str) -> str | None:
         try:
             tokens = shlex.split(command, posix=False)
@@ -289,6 +376,8 @@ class TerminalAgent:
         return self._is_allowed_path(cwd)
 
     def _is_allowed_path(self, path: Path) -> bool:
+        if os.name != "nt" and PureWindowsPath(str(path)).drive:
+            return False
         known_paths = get_known_user_paths()
         allowed_roots = [
             self.root_dir,
@@ -325,9 +414,7 @@ class TerminalAgent:
         for pattern in patterns:
             for match in re.finditer(pattern, command, re.IGNORECASE):
                 raw_path = self._expand_powershell_env_vars(match.group("path"))
-                candidate = Path(raw_path).expanduser()
-                if not candidate.is_absolute():
-                    candidate = (cwd / candidate).resolve()
+                candidate = self._resolve_shell_path(raw_path, cwd)
                 if candidate not in created_paths:
                     created_paths.append(candidate)
         django_startproject = re.search(
@@ -352,12 +439,25 @@ class TerminalAgent:
         for pattern in patterns:
             for match in re.finditer(pattern, command, re.IGNORECASE):
                 raw_path = self._expand_powershell_env_vars(match.group("path"))
-                candidate = Path(raw_path).expanduser()
-                if not candidate.is_absolute():
-                    candidate = (cwd / candidate).resolve()
+                candidate = self._resolve_shell_path(raw_path, cwd)
                 if candidate not in deleted_paths:
                     deleted_paths.append(candidate)
         return deleted_paths
+
+    def _resolve_shell_path(self, raw_path: str, cwd: Path) -> Path:
+        """Resolve a shell path consistently, including Windows paths in POSIX tests."""
+        expanded = os.path.expanduser(raw_path.strip())
+        windows_path = PureWindowsPath(expanded)
+        if os.name != "nt" and windows_path.drive:
+            # A Windows absolute path must never be reinterpreted as a harmless
+            # relative POSIX path; that can bypass allowed-root checks.
+            return Path(expanded)
+        if os.name != "nt":
+            expanded = expanded.replace("\\", os.sep)
+        candidate = Path(expanded).expanduser()
+        if not candidate.is_absolute():
+            candidate = (cwd / candidate).resolve()
+        return candidate
 
     def _expand_powershell_env_vars(self, value: str) -> str:
         def _replace(match: re.Match[str]) -> str:

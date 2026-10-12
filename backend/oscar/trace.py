@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from oscar import config
+from oscar.diagnostics import sanitize_for_log
 
 
 @dataclass
@@ -26,7 +27,7 @@ class TraceStep:
     context_snapshot: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        return sanitize_for_log({
             "step_index": self.step_index,
             "action": self.action,
             "route": self.route,
@@ -36,11 +37,15 @@ class TraceStep:
             "failure_reason": self.failure_reason,
             "fallback_used": self.fallback_used,
             "context_snapshot": self.context_snapshot,
-        }
+        })
 
 
 class ExecutionTrace:
-    """Append-only run trace used for debugging routing and retries."""
+    """Append-only run trace used for debugging routing and retries.
+
+    Payloads are sanitized when converted to dictionaries so action/context
+    values do not persist common credential formats in trace files.
+    """
 
     def __init__(self, *, task: str) -> None:
         self.task = task
@@ -74,12 +79,12 @@ class ExecutionTrace:
         return step
 
     def build_payload(self) -> dict[str, Any]:
-        return {
+        return sanitize_for_log({
             "task": self.task,
             "started_at": self.started_at,
             "finished_at": datetime.now(timezone.utc).isoformat(),
             "steps": [step.to_dict() for step in self.steps],
-        }
+        })
 
     def write_json(self, *, logs_dir: str | Path | None = None) -> Path:
         target_dir = Path(logs_dir) if logs_dir is not None else config.LOGS_DIR

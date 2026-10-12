@@ -71,8 +71,8 @@ OSCAR/
 
 ## Prerequisites
 
-- Python 3.9+
-- Flutter SDK with Windows desktop support enabled
+- Python 3.11–3.13 (Python 3.13 recommended; Python 3.14 is not yet supported by the pinned desktop dependencies)
+- Flutter SDK with Windows desktop support enabled and a bundled Dart SDK satisfying `desktop/pubspec.yaml` (`^3.11.1`)
 - Git
 - A Google Gemini API key
 
@@ -111,6 +111,37 @@ cd ..
 ```
 
 If Windows desktop support is not configured yet, follow the official [Flutter desktop setup guide](https://docs.flutter.dev/platform-integration/desktop).
+
+## Development checks
+
+Run the backend test suite from the repository root:
+
+```powershell
+python -m pip install -r backend\requirements.txt
+python -m pytest backend\tests -q
+```
+
+Run a focused test module while debugging, for example:
+
+```powershell
+python -m pytest backend\tests\test_terminal_agent.py -q
+```
+
+The backend dependency metadata is maintained in `backend/pyproject.toml`. The compatibility `backend/requirements.txt` installs `./backend[dev]` from that metadata, so dependency versions are not duplicated across two manually maintained lists. Run the requirements command from the repository root. Windows-only automation dependencies are guarded by platform markers. The Gemini client currently supports both `google-genai` and the legacy `google-generativeai` SDK as an explicit fallback; keep both until the provider migration is complete and tests demonstrate the fallback can be removed. OSCAR is Windows-first, so run the full suite on Windows before considering a release baseline final. Linux runs are useful for finding platform-neutral regressions but do not replace Windows verification.
+
+### Configuration validation
+
+Configuration is validated at backend startup. Numeric settings reject malformed, non-finite, and out-of-range values; boolean settings accept `true/false`, `yes/no`, `on/off`, and `1/0`; `OSCAR_LOG_LEVEL` accepts `CRITICAL`, `ERROR`, `WARNING`, `INFO`, or `DEBUG`. Invalid values raise an actionable `ValueError` naming the setting, so correct `backend/.env` before restarting.
+
+## Create a safe source archive
+
+Use the archive helper instead of zipping the whole project folder manually:
+
+```powershell
+python scripts/create_source_archive.py
+```
+
+It writes `OSCAR-source.zip` beside the project and excludes `.env` files, credentials, caches, logs, virtual environments, and local OSCAR state. `.env.example` is retained. Always inspect the archive contents before sharing it.
 
 ## Run OSCAR
 
@@ -169,3 +200,21 @@ Bug reports, feature ideas, and pull requests are welcome. For problems or sugge
 ## License
 
 See [LICENSE](LICENSE) for the project's license terms.
+
+
+## Troubleshooting a clean backend setup
+
+Use a fresh virtual environment when diagnosing dependency conflicts so globally preinstalled packages do not affect `pip check`.
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r backend\requirements.txt
+python -m pip check
+python -m pytest backend\tests -q
+```
+
+If installation fails, preserve the first package-resolution error and the Python version (`python --version`) before changing pins. Do not work around resolver errors by installing the whole project with `--no-deps`; that checks package metadata/building but does not validate the runtime dependency set. Playwright browser installation and Flutter Windows checks should be completed on the target Windows machine.
+
+The current Gemini client retries malformed JSON and selected transient provider errors. It does not yet enforce a hard OSCAR-level deadline around a hung synchronous SDK request; provider request timeouts are a tracked limitation for the model-gateway work.

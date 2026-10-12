@@ -312,3 +312,47 @@ def test_refine_click_action_normalizes_grid_coordinates_for_raw_fallbacks() -> 
     assert action["x"] == 960
     assert action["y"] == 270
     assert action["reasoning"] == original_action["reasoning"]
+
+
+
+def test_ask_gemini_does_not_retry_non_transient_request_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {"count": 0}
+
+    def fail_with_auth_error(_prompt, _screenshot):
+        calls["count"] += 1
+        raise RuntimeError("401 unauthorized")
+
+    monkeypatch.setattr(
+        "oscar.gemini_client._load_genai",
+        lambda: FakeGenAI([]),
+    )
+    # Exercise retry policy directly, independent of SDK initialization.
+    with pytest.raises(RuntimeError, match="401 unauthorized"):
+        gemini_client._generate_json_response(
+            fail_with_auth_error,
+            prompt="test",
+            screenshot=None,
+            retries=3,
+        )
+
+    assert calls["count"] == 1
+
+
+def test_ask_gemini_does_not_retry_timeout_without_explicit_timeout_policy() -> None:
+    calls = {"count": 0}
+
+    def timeout(_prompt, _screenshot):
+        calls["count"] += 1
+        raise TimeoutError("provider request timed out")
+
+    with pytest.raises(TimeoutError, match="timed out"):
+        gemini_client._generate_json_response(
+            timeout,
+            prompt="test",
+            screenshot=None,
+            retries=3,
+        )
+
+    assert calls["count"] == 1

@@ -549,3 +549,130 @@ async def test_orchestrator_restores_oscar_focus_after_ui_runs(
     await Orchestrator(planner=DonePlanner()).run("finish", ui_callback=ui_callback)
 
     assert focus_calls == [orchestrator_module.config.WINDOW_FOCUS_TIMEOUT]
+
+
+
+@pytest.mark.anyio
+async def test_orchestrator_sanitizes_provider_error_before_ui_event(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    class FailingPlanner:
+        async def plan_next_action(self, context, memory):
+            raise RuntimeError("provider failed api_key=super-secret-value")
+
+    class MemoryStub:
+        @classmethod
+        def load(cls):
+            return cls()
+
+        def snapshot(self):
+            return {}
+
+        def save(self):
+            return None
+
+        def record(self, *args, **kwargs):
+            return None
+
+    monkeypatch.setattr(
+        "oscar.orchestrator.PersistentMemoryStore",
+        MemoryStub,
+    )
+    monkeypatch.setattr(
+        "oscar.orchestrator.write_run_log",
+        lambda **kwargs: tmp_path / "run.json",
+    )
+    monkeypatch.setattr(
+        "oscar.trace.ExecutionTrace.write_json",
+        lambda self, logs_dir=None: tmp_path / "trace.json",
+    )
+    monkeypatch.setattr(
+        "oscar.orchestrator.get_cursor_position",
+        lambda: (0, 0),
+    )
+    monkeypatch.setattr(
+        "oscar.orchestrator.focus_oscar_app_window",
+        lambda timeout: True,
+    )
+
+    events = []
+
+    async def callback(event):
+        events.append(event)
+
+    async def return_context(self, context, *, include_ui=False):
+        return context
+
+    # Patch the async context refresh with a proper coroutine.
+    monkeypatch.setattr(
+        "oscar.orchestrator.ContextUpdater.refresh_environment",
+        return_context,
+    )
+
+    with pytest.raises(RuntimeError, match="super-secret-value"):
+        await Orchestrator(planner=FailingPlanner()).run(
+            "test provider failure",
+            ui_callback=callback,
+        )
+
+    failed = next(event for event in events if event["type"] == "task_failed")
+    assert "super-secret-value" not in failed["error"]
+    assert "api_key=[REDACTED]" in failed["error"]
+
+
+@pytest.mark.anyio
+async def test_orchestrator_finalization_failures_do_not_mask_primary_error_or_skip_run_log(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    run_log_calls: list[dict] = []
+    events: list[dict] = []
+
+    class FailingMemoryStore:
+        @classmethod
+        def load(cls):
+            return cls()
+
+        def snapshot(self):
+            return {}
+
+        def save(self):
+            raise OSError("memory store unavailable")
+
+        def record(self, *args, **kwargs):
+            return None
+
+    class FailingPlanner:
+        async def plan_next_action(self, context, memory):
+            raise RuntimeError("primary planner failure")
+
+    async def keep_context(self, context, *, include_ui=False):
+        return context
+
+    async def callback(event):
+        events.append(event)
+
+    def write_run_log_stub(**kwargs):
+        run_log_calls.append(kwargs)
+        return tmp_path / "run.json"
+
+    monkeypatch.setattr("oscar.orchestrator.PersistentMemoryStore", FailingMemoryStore)
+    monkeypatch.setattr("oscar.orchestrator.ContextUpdater.refresh_environment", keep_context)
+    monkeypatch.setattr("oscar.orchestrator.write_run_log", write_run_log_stub)
+    monkeypatch.setattr(
+        "oscar.trace.ExecutionTrace.write_json",
+        lambda self, logs_dir=None: (_ for _ in ()).throw(OSError("trace disk failure")),
+    )
+    monkeypatch.setattr("oscar.orchestrator.get_cursor_position", lambda: (0, 0))
+    monkeypatch.setattr("oscar.orchestrator.focus_oscar_app_window", lambda timeout: True)
+
+    with pytest.raises(RuntimeError, match="primary planner failure"):
+        await Orchestrator(planner=FailingPlanner()).run(
+            "trigger primary failure", ui_callback=callback
+        )
+
+    assert len(run_log_calls) == 1
+    assert run_log_calls[0]["trace_path"] is None
+    finalized = next(event for event in events if event["type"] == "task_finalized")
+    assert finalized["log_path"] == str(tmp_path / "run.json")
+    assert finalized["trace_path"] is None
+    assert finalized["finalization_failures"] == ["persistent_memory", "trace"]

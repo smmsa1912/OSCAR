@@ -12,6 +12,7 @@ from typing import Any, Awaitable, Callable
 import anyio
 
 from oscar import config
+from oscar.diagnostics import sanitize_text
 from oscar.brain.planner import BrainPlanner, GeminiBrain
 from oscar.context import LastCommandResult, TaskContext
 from oscar.core.persistent_memory import PersistentMemoryStore
@@ -177,6 +178,7 @@ class Orchestrator:
         final_message: str | None = None
         log_path: Path | None = None
         trace_path: Path | None = None
+        finalization_failures: list[str] = []
         await self._emit_ui_event(
             ui_callback,
             "task_started",
@@ -417,7 +419,7 @@ class Orchestrator:
             )
         except Exception as exc:
             status = "failed"
-            error_message = str(exc)
+            error_message = sanitize_text(str(exc))
             await self._emit_ui_event(
                 ui_callback,
                 "task_failed",
@@ -427,35 +429,69 @@ class Orchestrator:
             )
             raise
         finally:
-            persistent_memory.save()
-            trace_path = trace.write_json()
-            log_path = write_run_log(
-                task=task,
-                history=history,
-                started_at=started_at,
-                finished_at=datetime.now(timezone.utc),
-                status=status,
-                error=error_message,
-                model_name=config.GEMINI_MODEL,
-                max_steps=config.MAX_STEPS,
-                action_delay=config.ACTION_DELAY,
-                trace_path=str(trace_path),
-                memory=memory.get_recent_steps(config.MAX_STEPS),
-                known_paths=render_known_path_strings(),
-                cursor_position=get_cursor_position(),  # sync is fine here — outside event loop
-            )
+            # Each cleanup step is isolated: a memory or trace write failure must
+            # not prevent the remaining diagnostics and UI finalization from running.
+            try:
+                persistent_memory.save()
+            except Exception as exc:
+                finalization_failures.append("persistent_memory")
+                LOGGER.warning(
+                    "Task finalization step persistent_memory failed: %s",
+                    sanitize_text(str(exc)),
+                )
+
+            try:
+                trace_path = trace.write_json()
+            except Exception as exc:
+                finalization_failures.append("trace")
+                LOGGER.warning(
+                    "Task finalization step trace failed: %s", sanitize_text(str(exc))
+                )
+
+            try:
+                log_path = write_run_log(
+                    task=task,
+                    history=history,
+                    started_at=started_at,
+                    finished_at=datetime.now(timezone.utc),
+                    status=status,
+                    error=error_message,
+                    model_name=config.GEMINI_MODEL,
+                    max_steps=config.MAX_STEPS,
+                    action_delay=config.ACTION_DELAY,
+                    trace_path=str(trace_path) if trace_path is not None else None,
+                    memory=memory.get_recent_steps(config.MAX_STEPS),
+                    known_paths=render_known_path_strings(),
+                    cursor_position=get_cursor_position(),  # sync is fine here — outside event loop
+                )
+            except Exception as exc:
+                finalization_failures.append("run_log")
+                LOGGER.warning(
+                    "Task finalization step run_log failed: %s", sanitize_text(str(exc))
+                )
+
             await self._emit_ui_event(
                 ui_callback,
                 "task_finalized",
                 task=task,
                 status=status,
-                error=error_message,
+                error=(error_message or (
+                    "One or more diagnostic artifacts could not be saved."
+                    if finalization_failures else None
+                )),
                 final_message=final_message,
-                log_path=str(log_path),
-                trace_path=str(trace_path),
+                log_path=str(log_path) if log_path is not None else None,
+                trace_path=str(trace_path) if trace_path is not None else None,
+                finalization_failures=list(finalization_failures),
             )
             await self._restore_ui_host_focus(ui_callback)
 
+        if finalization_failures:
+            # Reached only when the task's primary execution did not raise; an
+            # exception already propagating from the main block is never masked.
+            raise RuntimeError(
+                "OSCAR task finalization failed for: " + ", ".join(finalization_failures)
+            )
         assert log_path is not None
         assert trace_path is not None
         return OrchestratorOutcome(

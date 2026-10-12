@@ -146,3 +146,40 @@ def test_require_api_key_raises_when_missing(monkeypatch: pytest.MonkeyPatch) ->
 
     with pytest.raises(RuntimeError, match="GEMINI_API_KEY"):
         config.require_api_key()
+
+
+@pytest.mark.parametrize(
+    ("setting", "value", "message"),
+    [
+        ("MAX_STEPS", "0", "MAX_STEPS must be >= 1"),
+        ("MAX_STEPS", "many", "MAX_STEPS must be an integer"),
+        ("TERMINAL_TIMEOUT_SECONDS", "-1", "TERMINAL_TIMEOUT_SECONDS must be >= 0.1"),
+        ("TERMINAL_OUTPUT_LIMIT", "999999999", "TERMINAL_OUTPUT_LIMIT must be <= 1000000"),
+        ("RETRY_BACKOFF_FACTOR", "0.5", "RETRY_BACKOFF_FACTOR must be >= 1.0"),
+        ("PLAYWRIGHT_TIMEOUT_SECONDS", "nan", "must be a finite number"),
+    ],
+)
+def test_config_rejects_invalid_numeric_ranges(
+    monkeypatch: pytest.MonkeyPatch, setting: str, value: str, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        _reload_config(monkeypatch, **{setting: value})
+
+
+def test_config_rejects_invalid_boolean(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValueError, match="ENABLE_SCREENSHOT_GRID must be a boolean"):
+        _reload_config(monkeypatch, ENABLE_SCREENSHOT_GRID="sometimes")
+
+
+def test_config_rejects_unknown_log_level(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValueError, match="OSCAR_LOG_LEVEL must be one of"):
+        _reload_config(monkeypatch, OSCAR_LOG_LEVEL="TRACEISH")
+
+
+def test_config_rejects_retry_max_below_initial(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValueError, match="RETRY_MAX_INTERVAL_SECONDS must be greater than or equal"):
+        _reload_config(
+            monkeypatch,
+            RETRY_INITIAL_INTERVAL_SECONDS="2",
+            RETRY_MAX_INTERVAL_SECONDS="1",
+        )

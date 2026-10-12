@@ -145,7 +145,7 @@ async def test_planner_recovers_from_model_json_errors() -> None:
     assert action == {
         "action": "wait",
         "seconds": 3,
-        "reasoning": "Recovering from internal JSON parsing error.",
+        "reasoning": "Recovering from a model response or planning error.",
         "task_complete": False,
     }
 
@@ -377,3 +377,16 @@ async def test_planner_critiques_window_control_for_input_intent() -> None:
         in prompt
         for prompt in prompts
     )
+
+
+
+@pytest.mark.anyio
+async def test_planner_error_recovery_message_is_not_json_specific() -> None:
+    def unavailable_model(*_args, **_kwargs):
+        raise RuntimeError("provider unavailable")
+
+    planner = GeminiBrain(ask_model=unavailable_model)
+    action = await planner.plan_next_action(_context("open notepad"), TaskMemory())
+
+    assert action["action"] == "wait"
+    assert "model response or planning error" in action["reasoning"]

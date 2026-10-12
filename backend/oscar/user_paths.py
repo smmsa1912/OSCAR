@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import re
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 _KNOWN_FOLDER_NAMES = {
     "desktop": "Desktop",
@@ -32,8 +32,9 @@ def get_user_home_dir() -> Path:
 def get_known_user_paths() -> dict[str, Path]:
     home = get_user_home_dir()
     paths = {"home": home}
+    windows_home = PureWindowsPath(str(home)) if re.match(r"^[A-Za-z]:\\", str(home)) else None
     for key, folder_name in _KNOWN_FOLDER_NAMES.items():
-        paths[key] = home / folder_name
+        paths[key] = Path(str(windows_home / folder_name)) if windows_home else home / folder_name
     return paths
 
 
@@ -43,14 +44,22 @@ def rewrite_known_user_paths(value: str) -> str:
         return rewritten
 
     known_paths = get_known_user_paths()
+    # Only rewrite Windows user-profile paths when the configured profile is
+    # itself Windows-style. On POSIX, preserve Windows paths rather than
+    # accidentally mapping them into the host user's home directory.
+    if not re.match(r"^[A-Za-z]:\\", str(known_paths["home"])):
+        return rewritten
+
     for key, folder_path in known_paths.items():
         if key == "home":
             continue
+        folder_name = _KNOWN_FOLDER_NAMES[key]
         pattern = re.compile(
-            rf"(?i)[a-z]:\\Users\\[^\\]+\\{re.escape(folder_path.name)}"
+            rf"(?i)[a-z]:\\Users\\[^\\]+\\{re.escape(folder_name)}"
         )
+        replacement = str(PureWindowsPath(str(folder_path)))
         rewritten = pattern.sub(
-            lambda _match, replacement=str(folder_path): replacement, rewritten
+            lambda _match, replacement=replacement: replacement, rewritten
         )
 
     return rewritten
@@ -69,7 +78,7 @@ def generalize_known_user_paths(value: str) -> str:
         if key == "home":
             continue
         replacements.append(
-            (str(folder_path), rf"$env:USERPROFILE\{folder_path.name}")
+            (str(folder_path), rf"$env:USERPROFILE\{_KNOWN_FOLDER_NAMES[key]}")
         )
     replacements.sort(key=lambda item: len(item[0]), reverse=True)
 

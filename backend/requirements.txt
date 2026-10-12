@@ -1,14 +1,3 @@
-google-genai
-google-generativeai
-pyautogui
-Pillow
-mss
-python-dotenv
-PyGetWindow
-psutil
-pywin32
-pywinauto
-playwright
-fastapi
-uvicorn[standard]
-
+# Authoritative dependencies live in backend/pyproject.toml.
+# Run this from the repository root: python -m pip install -r backend/requirements.txt
+-e ./backend[dev]

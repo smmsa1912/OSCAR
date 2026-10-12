@@ -748,6 +748,8 @@ def test_execute_action_close_tab_uses_ctrl_w(monkeypatch: pytest.MonkeyPatch) -
 def test_execute_action_open_file_with_named_app_launches_editor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Keep the expected Windows profile independent of the account running pytest.
+    monkeypatch.setenv("USERPROFILE", r"C:\Users\andre")
     popen_calls: list[list[str]] = []
 
     def fake_popen(args, stdout=None, stderr=None):

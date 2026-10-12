@@ -51,3 +51,43 @@ def test_write_run_log_persists_errors(tmp_path) -> None:
 
     payload = json.loads(log_path.read_text(encoding="utf-8"))
     assert payload["error"] == "boom"
+
+
+def test_write_run_log_redacts_credentials_recursively(tmp_path) -> None:
+    log_path = write_run_log(
+        task="Request with api_key=super-secret-value",
+        history=[
+            {
+                "action": "request",
+                "headers": {"Authorization": "Bearer abc.def.ghi"},
+                "note": "Google key AIza12345678901234567890123456789012",
+            }
+        ],
+        started_at="2026-03-12T10:00:00+00:00",
+        finished_at="2026-03-12T10:00:01+00:00",
+        status="failed",
+        error="provider returned api_key=other-secret",
+        logs_dir=tmp_path / "logs",
+    )
+
+    serialized = log_path.read_text(encoding="utf-8")
+    payload = json.loads(serialized)
+    assert "super-secret-value" not in serialized
+    assert "abc.def.ghi" not in serialized
+    assert "AIza12345678901234567890123456789012" not in serialized
+    assert "other-secret" not in serialized
+    assert payload["history"][0]["headers"]["Authorization"] == "[REDACTED]"
+
+
+def test_write_run_log_bounds_long_diagnostic_strings(tmp_path) -> None:
+    log_path = write_run_log(
+        task="x" * 9000,
+        history=[],
+        started_at="start",
+        finished_at="finish",
+        status="failed",
+        logs_dir=tmp_path / "logs",
+    )
+    payload = json.loads(log_path.read_text(encoding="utf-8"))
+    assert len(payload["task"]) < 8100
+    assert payload["task"].endswith("…[truncated]")

@@ -133,7 +133,7 @@ class GeminiBrain:
         return {
             "action": "wait",
             "seconds": 3,
-            "reasoning": "Recovering from internal JSON parsing error.",
+            "reasoning": "Recovering from a model response or planning error.",
             "task_complete": False,
         }
 
