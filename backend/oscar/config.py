@@ -27,6 +27,7 @@ STATE_DIR = Path(
 ).expanduser()
 SESSION_MEMORY_PATH = STATE_DIR / "session_memory.json"
 
+
 load_dotenv(ENV_FILE)
 
 
@@ -96,6 +97,10 @@ def _parse_bool(name: str, default: bool) -> bool:
         f"{name} must be a boolean (true/false, yes/no, on/off, or 1/0); "
         f"received {raw_value!r}."
     )
+
+
+# When enabled, action executors report intended actions without performing them.
+OSCAR_DRY_RUN = _parse_bool("OSCAR_DRY_RUN", False)
 
 
 def _parse_region(value: str | None) -> tuple[int, int, int, int] | None:

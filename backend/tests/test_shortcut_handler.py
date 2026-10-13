@@ -77,3 +77,27 @@ async def test_shortcut_handler_fails_when_screenshot_file_is_missing(
 
     assert result.success is False
     assert result.failure_reason == "Screenshot file was not created."
+
+
+@pytest.mark.anyio
+async def test_shortcut_handler_dry_run_never_loads_pyautogui(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from oscar import config
+
+    monkeypatch.setattr(config, "OSCAR_DRY_RUN", True)
+    monkeypatch.setattr("oscar.agents.shortcut_handler.config.OSCAR_DRY_RUN", True)
+    handler = ShortcutHandler()
+    monkeypatch.setattr(
+        handler,
+        "_get_pyautogui",
+        lambda: (_ for _ in ()).throw(AssertionError("pyautogui must not be loaded")),
+    )
+
+    result = await handler.run(
+        {"action": "shortcut", "shortcut_name": "os.open_explorer"}
+    )
+
+    assert result.success is True
+    assert result.data["dry_run"] is True
+    assert result.data["execution_confirmed"] is False

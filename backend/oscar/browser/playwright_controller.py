@@ -25,6 +25,23 @@ class PlaywrightController:
         self._page = None
         self._session_config: BrowserSessionConfig | None = None
 
+    @staticmethod
+    def _dry_run_result(action: str, **details) -> ActionResult:
+        return ActionResult(
+            success=True,
+            route="browser",
+            action=action,
+            confidence=1.0,
+            data={
+                "dry_run": True,
+                "execution_confirmed": False,
+                "would_execute": action,
+                "details": details,
+                "message": "Dry-run enabled; no browser action was executed.",
+            },
+            retryable=False,
+        )
+
     @property
     def page(self):
         return self._page
@@ -47,6 +64,8 @@ class PlaywrightController:
         profile_name: str | None = None,
         browser_name: str = "chromium",
     ) -> ActionResult:
+        if config.OSCAR_DRY_RUN:
+            return self._dry_run_result("browser_open", browser_name=browser_name)
         config_obj = BrowserSessionConfig(
             session_mode=session_mode,
             browser_name=browser_name,
@@ -80,6 +99,8 @@ class PlaywrightController:
         reload: bool = False,
         wait_timeout_seconds: float | None = None,
     ) -> ActionResult:
+        if config.OSCAR_DRY_RUN:
+            return self._dry_run_result("browser_navigate", url=url, reload=reload)
         try:
             await self._ensure_page(restart=reopen_session)
             existing_page = self._find_page_by_url(url)
@@ -184,6 +205,8 @@ class PlaywrightController:
         *,
         selector_strategy: str | None = None,
     ) -> ActionResult:
+        if config.OSCAR_DRY_RUN:
+            return self._dry_run_result("browser_click", target_text=name)
         try:
             await self._ensure_page()
             timeout_ms = int(config.PLAYWRIGHT_TIMEOUT_SECONDS * 1000)
@@ -222,6 +245,8 @@ class PlaywrightController:
         selector_strategy: str | None = None,
         action_name: str = "browser_find",
     ) -> ActionResult:
+        if config.OSCAR_DRY_RUN:
+            return self._dry_run_result(action_name, target_text=text)
         try:
             await self._ensure_page()
             timeout_ms = int(config.PLAYWRIGHT_TIMEOUT_SECONDS * 1000)
@@ -273,6 +298,8 @@ class PlaywrightController:
         selector_strategy: str | None = None,
         action_name: str = "browser_type",
     ) -> ActionResult:
+        if config.OSCAR_DRY_RUN:
+            return self._dry_run_result(action_name, target_text=text, text=type_text)
         try:
             await self._ensure_page()
             timeout_ms = int(config.PLAYWRIGHT_TIMEOUT_SECONDS * 1000)
@@ -342,6 +369,8 @@ class PlaywrightController:
         url: str | None = None,
         title_contains: str | None = None,
     ) -> ActionResult:
+        if config.OSCAR_DRY_RUN:
+            return self._dry_run_result("browser_switch_tab", text=text, url=url)
         try:
             await self._ensure_page()
             pages = list(getattr(self._context, "pages", []) or [])
@@ -498,6 +527,8 @@ class PlaywrightController:
             )
 
     async def reload(self) -> ActionResult:
+        if config.OSCAR_DRY_RUN:
+            return self._dry_run_result("browser_reload")
         try:
             await self._ensure_page()
             await self._page.reload(
@@ -523,6 +554,8 @@ class PlaywrightController:
             )
 
     async def close(self) -> None:
+        if config.OSCAR_DRY_RUN:
+            return
         if self._context is not None:
             await self._context.close()
             self._context = None

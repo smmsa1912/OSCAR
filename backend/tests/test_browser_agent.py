@@ -427,3 +427,39 @@ async def test_browser_agent_existing_native_navigation_uses_os_launch_instead_o
             "profile_name": "Andrew",
         }
     ]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("method_name", "args", "kwargs", "expected_action"),
+    [
+        ("open_browser", (), {}, "browser_open"),
+        ("search_and_open", ("red pandas",), {}, "browser_search"),
+        ("navigate", ("https://example.com",), {}, "browser_navigate"),
+        ("get_tabs", (), {}, "browser_get_tabs"),
+        ("click_tab", ("Settings",), {}, "browser_click"),
+        ("switch_tab", (), {"url": "https://example.com"}, "browser_switch_tab"),
+        ("find_and_click", ("Submit",), {}, "browser_find"),
+        ("type_text", ("Search", "secret text"), {}, "browser_type"),
+        ("extract_main_content", (), {}, "browser_extract"),
+        ("wait_for_text", ("Ready",), {}, "browser_wait_for"),
+    ],
+)
+async def test_direct_browser_methods_are_side_effect_free_in_dry_run(
+    monkeypatch, method_name, args, kwargs, expected_action
+) -> None:
+    from oscar import config
+
+    monkeypatch.setattr(config, "OSCAR_DRY_RUN", True)
+    controller = FakeController()
+    agent = BrowserAgent(controller=controller, native_browser_enabled=False)
+
+    method = getattr(agent, method_name)
+    result = await method(*args, **kwargs)
+
+    assert result.success is True
+    assert result.action == expected_action
+    assert result.data["dry_run"] is True
+    assert result.data["execution_confirmed"] is False
+    assert result.data["would_execute"] == expected_action
+    assert controller.calls == []

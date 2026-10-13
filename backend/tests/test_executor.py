@@ -892,3 +892,35 @@ def test_execute_action_wait_until_returns_delay_without_sleep(
     assert result["wait_until"] == target.isoformat()
     assert result["delay"] == pytest.approx(90, abs=1.0)
     assert result["execution_confirmed"] is True
+
+
+def test_execute_action_dry_run_does_not_touch_desktop(monkeypatch) -> None:
+    monkeypatch.setattr(executor.config, "OSCAR_DRY_RUN", True)
+
+    def unexpected_desktop_access():
+        raise AssertionError("desktop access must not happen in dry-run mode")
+
+    monkeypatch.setattr(executor, "_hydrate_action_from_element_id", unexpected_desktop_access)
+    result = execute_action({
+        "action": "click",
+        "x": 100,
+        "y": 200,
+        "reasoning": "Test only",
+        "task_complete": False,
+    })
+
+    assert result is not None
+    assert result["dry_run"] is True
+    assert result["execution_confirmed"] is False
+    assert result["would_execute"] == "click"
+
+
+def test_execute_action_normal_mode_remains_enabled(monkeypatch) -> None:
+    monkeypatch.setattr(executor.config, "OSCAR_DRY_RUN", False)
+    result = execute_action({
+        "action": "wait",
+        "seconds": 1,
+        "reasoning": "Test wait",
+        "task_complete": False,
+    })
+    assert result == {"delay": 1.0, "execution_confirmed": True}

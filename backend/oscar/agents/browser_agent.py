@@ -67,6 +67,8 @@ class BrowserAgent:
         profile_name: str | None = None,
         browser_name: str = "chromium",
     ) -> ActionResult:
+        if config.OSCAR_DRY_RUN:
+            return self._dry_run_result("browser_open", browser_name=browser_name)
         if self._should_use_native_browser(
             browser_name=browser_name,
             profile_name=profile_name,
@@ -101,6 +103,8 @@ class BrowserAgent:
         browser_name: str | None = None,
         profile_name: str | None = None,
     ) -> ActionResult:
+        if config.OSCAR_DRY_RUN:
+            return self._dry_run_result("browser_search", query=query)
         normalized_query = simplify_search_query(query)
         if not normalized_query:
             normalized_query = " ".join(query.strip().split())
@@ -151,6 +155,8 @@ class BrowserAgent:
         browser_name: str | None = None,
         profile_name: str | None = None,
     ) -> ActionResult:
+        if config.OSCAR_DRY_RUN:
+            return self._dry_run_result("browser_navigate", url=url)
         normalized_url = normalize_url(url)
         if self._looks_like_browser_focus_request(normalized_url):
             return await self._open_native_browser(
@@ -191,6 +197,8 @@ class BrowserAgent:
         )
 
     async def get_tabs(self) -> ActionResult:
+        if config.OSCAR_DRY_RUN:
+            return self._dry_run_result("browser_get_tabs")
         if self.controller.is_active():
             return await self.controller.get_tabs()
 
@@ -223,6 +231,8 @@ class BrowserAgent:
         *,
         selector_strategy: str | None = None,
     ) -> ActionResult:
+        if config.OSCAR_DRY_RUN:
+            return self._dry_run_result("browser_click", text=name)
         if self.native_browser_enabled:
             native_result = await self._click_native_tab(name)
             if native_result is not None:
@@ -243,6 +253,8 @@ class BrowserAgent:
         url: str | None = None,
         title_contains: str | None = None,
     ) -> ActionResult:
+        if config.OSCAR_DRY_RUN:
+            return self._dry_run_result("browser_switch_tab", text=text, url=url)
         title_filter = " ".join(str(title_contains or text or "").strip().split())
         if self.native_browser_enabled:
             current_title = self._native_browser_title or str(
@@ -320,6 +332,8 @@ class BrowserAgent:
         *,
         selector_strategy: str | None = None,
     ) -> ActionResult:
+        if config.OSCAR_DRY_RUN:
+            return self._dry_run_result("browser_find", text=text)
         if self.native_browser_enabled:
             return ActionResult(
                 success=False,
@@ -346,6 +360,8 @@ class BrowserAgent:
         *,
         selector_strategy: str | None = None,
     ) -> ActionResult:
+        if config.OSCAR_DRY_RUN:
+            return self._dry_run_result("browser_type", target_text=target_text)
         if not self.controller.is_active():
             opened = await self.controller.open_browser(
                 session_mode="managed",
@@ -360,6 +376,8 @@ class BrowserAgent:
         )
 
     async def extract_main_content(self) -> ActionResult:
+        if config.OSCAR_DRY_RUN:
+            return self._dry_run_result("browser_extract")
         if self.native_browser_enabled:
             return ActionResult(
                 success=False,
@@ -382,6 +400,8 @@ class BrowserAgent:
         *,
         selector_strategy: str | None = None,
     ) -> ActionResult:
+        if config.OSCAR_DRY_RUN:
+            return self._dry_run_result("browser_wait_for", text=text)
         if self.native_browser_enabled:
             return ActionResult(
                 success=False,
@@ -401,8 +421,40 @@ class BrowserAgent:
             selector_strategy=selector_strategy,
         )
 
+    @staticmethod
+    def _dry_run_result(action_name: str, **details: Any) -> ActionResult:
+        """Return a dry-run record without inspecting or controlling a browser."""
+        return ActionResult(
+            success=True,
+            route="browser",
+            action=action_name,
+            confidence=1.0,
+            data={
+                "dry_run": True,
+                "execution_confirmed": False,
+                "would_execute": action_name,
+                **details,
+                "message": "Dry-run enabled; browser action was not executed.",
+            },
+            retryable=False,
+        )
+
     async def run(self, action: dict[str, Any]) -> ActionResult:
         action_name = action.get("action")
+        if config.OSCAR_DRY_RUN:
+            return ActionResult(
+                success=True,
+                route="browser",
+                action=str(action_name or "unknown"),
+                confidence=1.0,
+                data={
+                    "dry_run": True,
+                    "execution_confirmed": False,
+                    "would_execute": str(action_name or "unknown"),
+                    "message": "Dry-run enabled; browser action was not executed.",
+                },
+                retryable=False,
+            )
         if action_name == "browser_open":
             return await self.open_browser(
                 session_mode=str(action.get("session_mode") or "managed"),

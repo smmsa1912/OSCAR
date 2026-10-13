@@ -7,6 +7,8 @@ import re
 from pathlib import Path
 from typing import Any, Callable
 
+from oscar import config
+
 
 _POWERSHELL_USERPROFILE_PATTERN = re.compile(r"\$env:USERPROFILE", re.IGNORECASE)
 
@@ -40,6 +42,8 @@ def execute_open_file(
         str(action["file_path"]),
         rewrite_known_user_paths=rewrite_known_user_paths,
     )
+    if config.OSCAR_DRY_RUN:
+        return {"dry_run": True, "execution_confirmed": False, "would_execute": "open_file", "file_path": str(file_path)}
     app_name = action.get("app_name")
 
     if app_name:
@@ -80,6 +84,8 @@ def execute_save_file(
         str(action["file_path"]),
         rewrite_known_user_paths=rewrite_known_user_paths,
     )
+    if config.OSCAR_DRY_RUN:
+        return {"dry_run": True, "execution_confirmed": False, "would_execute": "save_file", "file_path": str(file_path)}
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:

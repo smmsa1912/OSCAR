@@ -676,3 +676,33 @@ async def test_orchestrator_finalization_failures_do_not_mask_primary_error_or_s
     assert finalized["log_path"] == str(tmp_path / "run.json")
     assert finalized["trace_path"] is None
     assert finalized["finalization_failures"] == ["persistent_memory", "trace"]
+
+
+@pytest.mark.anyio
+async def test_orchestrator_control_action_honors_dry_run(monkeypatch) -> None:
+    from oscar import config, executor
+
+    monkeypatch.setattr(config, "OSCAR_DRY_RUN", True)
+    monkeypatch.setattr(executor.config, "OSCAR_DRY_RUN", True)
+    orchestrator = Orchestrator()
+    context = TaskContext(
+        task="dry-run test",
+        current_working_directory=".",
+        screen_size=(640, 360),
+    )
+
+    result = await orchestrator._execute_control_action(
+        {
+            "action": "click",
+            "x": 500,
+            "y": 500,
+            "reasoning": "Test action only.",
+            "task_complete": False,
+        },
+        context,
+    )
+
+    assert result.success is True
+    assert result.data["dry_run"] is True
+    assert result.data["execution_confirmed"] is False
+    assert result.data["would_execute"] == "click"

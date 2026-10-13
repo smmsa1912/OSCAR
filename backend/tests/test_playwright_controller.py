@@ -226,3 +226,52 @@ async def test_controller_navigate_reuses_existing_tab_for_matching_url() -> Non
     assert controller.page is second_page
     assert second_page.brought_to_front is True
     assert result.data["already_open"] is True
+
+
+@pytest.mark.anyio
+async def test_playwright_controller_navigation_dry_run_never_opens_browser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from oscar import config
+
+    monkeypatch.setattr(config, "OSCAR_DRY_RUN", True)
+    monkeypatch.setattr(
+        "oscar.browser.playwright_controller.config.OSCAR_DRY_RUN", True
+    )
+    controller = PlaywrightController()
+
+    async def forbidden_ensure_page(*args, **kwargs):
+        raise AssertionError("browser must not be started in dry-run mode")
+
+    monkeypatch.setattr(controller, "_ensure_page", forbidden_ensure_page)
+    result = await controller.navigate("https://example.com")
+
+    assert result.success is True
+    assert result.data["dry_run"] is True
+    assert result.data["execution_confirmed"] is False
+
+
+@pytest.mark.anyio
+async def test_playwright_controller_close_dry_run_preserves_browser_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from oscar import config
+
+    monkeypatch.setattr(config, "OSCAR_DRY_RUN", True)
+    monkeypatch.setattr(
+        "oscar.browser.playwright_controller.config.OSCAR_DRY_RUN", True
+    )
+    controller = PlaywrightController()
+
+    class FakeContext:
+        closed = False
+
+        async def close(self):
+            self.closed = True
+
+    context = FakeContext()
+    controller._context = context
+    await controller.close()
+
+    assert context.closed is False
+    assert controller._context is context

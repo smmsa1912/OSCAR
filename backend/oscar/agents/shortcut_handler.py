@@ -8,6 +8,7 @@ from typing import Any
 
 import anyio
 
+from oscar import config
 from oscar.runtime import ActionResult
 from oscar.user_paths import get_known_user_paths
 from oscar.window_control import focus_app_window
@@ -48,6 +49,20 @@ class ShortcutHandler:
 
     async def run(self, action: dict[str, Any]) -> ActionResult:
         shortcut_name = str(action.get("shortcut_name") or "")
+        if config.OSCAR_DRY_RUN:
+            return ActionResult(
+                success=True,
+                route="shortcut",
+                action="shortcut",
+                confidence=1.0,
+                data={
+                    "dry_run": True,
+                    "execution_confirmed": False,
+                    "would_execute": shortcut_name,
+                    "message": "Dry-run enabled; no shortcut or screenshot was executed.",
+                },
+                retryable=False,
+            )
         keys = self.SHORTCUTS.get(shortcut_name)
         if keys is None:
             return ActionResult(

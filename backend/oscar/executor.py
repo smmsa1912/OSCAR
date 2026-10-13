@@ -623,7 +623,18 @@ def validate_action(
 
 
 def execute_action(action: dict[str, Any]) -> dict[str, Any] | None:
-    """Execute a validated action and optionally return execution metadata."""
+    """Execute a validated action, or report it without side effects in dry-run mode."""
+
+    if config.OSCAR_DRY_RUN:
+        # Do not hydrate element IDs here: hydration can inspect the live UI.
+        action_name = str(action.get("action", "unknown"))
+        return {
+            "execution_confirmed": False,
+            "dry_run": True,
+            "would_execute": action_name,
+            "action": dict(action),
+            "message": "Dry-run enabled; no desktop action was executed.",
+        }
 
     action = _hydrate_action_from_element_id(action)
     action_name = action["action"]

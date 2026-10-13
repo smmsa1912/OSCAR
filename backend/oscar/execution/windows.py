@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from oscar import config
+
 
 def execute_focus_app(
     action: dict[str, Any],
@@ -15,6 +17,8 @@ def execute_focus_app(
     window_focus_timeout: float,
 ) -> dict[str, Any]:
     app_name = str(action["app_name"])
+    if config.OSCAR_DRY_RUN:
+        return {"dry_run": True, "execution_confirmed": False, "would_execute": "focus_app", "app_name": app_name}
     if not app_window_exists(app_name):
         raise error_cls(f"Cannot focus '{app_name}' because no visible window was found.")
     if not focus_app_window(app_name, timeout=window_focus_timeout):
@@ -41,6 +45,8 @@ def execute_open_app(
     get_pyautogui: Callable[[], Any],
 ) -> dict[str, Any]:
     app_name = str(action["app_name"])
+    if config.OSCAR_DRY_RUN:
+        return {"dry_run": True, "execution_confirmed": False, "would_execute": "open_app", "app_name": app_name}
     should_focus_existing = (
         not action.get("new_instance")
         and not action.get("profile_name")
@@ -96,6 +102,8 @@ def execute_window_hotkey_action(
 ) -> None:
     action_name = str(action["action"])
     app_name = str(action["app_name"])
+    if config.OSCAR_DRY_RUN:
+        return {"dry_run": True, "execution_confirmed": False, "would_execute": action_name, "app_name": app_name}
     if is_oscar_app_name(app_name):
         raise error_cls("Refused to close or modify the OSCAR desktop application.")
     if action_name != "new_document" and not app_window_exists(app_name):

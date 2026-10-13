@@ -58,6 +58,20 @@ class TerminalAgent:
 
     async def run(self, action: dict[str, Any], current_cwd: str) -> ActionResult:
         command = self._normalize_user_path_text(str(action.get("command") or "")).strip()
+        if config.OSCAR_DRY_RUN:
+            return ActionResult(
+                success=True,
+                route="terminal",
+                action="terminal_command",
+                confidence=1.0,
+                data={
+                    "dry_run": True,
+                    "execution_confirmed": False,
+                    "would_execute": command,
+                    "message": "Dry-run enabled; no terminal command was executed.",
+                },
+                retryable=False,
+            )
         command = self._normalize_aliases(command)
         cwd = self._resolve_directory(
             str(action.get("working_directory") or current_cwd or self.root_dir),

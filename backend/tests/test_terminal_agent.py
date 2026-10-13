@@ -440,3 +440,27 @@ def test_read_command_with_path_outside_allowed_roots_requires_confirmation(
     assert agent._is_allowlisted_command(
         'Get-ChildItem "C:\\Windows"', tmp_path
     ) is False
+
+
+@pytest.mark.anyio
+async def test_terminal_agent_dry_run_never_spawns_process(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from oscar import config
+
+    monkeypatch.setattr(config, "OSCAR_DRY_RUN", True)
+    monkeypatch.setattr("oscar.agents.terminal_agent.config.OSCAR_DRY_RUN", True)
+
+    async def forbidden_spawn(*args, **kwargs):
+        raise AssertionError("subprocess must not be spawned in dry-run mode")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", forbidden_spawn)
+    agent = TerminalAgent(root_dir=tmp_path)
+    result = await agent.run(
+        {"action": "terminal_command", "command": "python -c \"print(1)\""},
+        str(tmp_path),
+    )
+
+    assert result.success is True
+    assert result.data["dry_run"] is True
+    assert result.data["execution_confirmed"] is False
