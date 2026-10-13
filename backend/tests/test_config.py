@@ -48,6 +48,7 @@ def _reload_config(monkeypatch: pytest.MonkeyPatch, **env: str):
         "PLAYWRIGHT_TIMEOUT_SECONDS",
         "PLAYWRIGHT_MANAGED_PROFILE_DIR",
         "OSCAR_LOG_LEVEL",
+        "OSCAR_DRY_RUN",
         "RETRY_INITIAL_INTERVAL_SECONDS",
         "RETRY_MAX_INTERVAL_SECONDS",
         "RETRY_BACKOFF_FACTOR",
@@ -186,6 +187,14 @@ def test_config_parses_values(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config.MAX_ROUTE_ATTEMPTS == 6
     assert config.ROUTE_FAILURE_PENALTY == 55
 
+
+
+def test_config_parses_dry_run_boolean(monkeypatch: pytest.MonkeyPatch) -> None:
+    enabled = _reload_config(monkeypatch, OSCAR_DRY_RUN="true")
+    assert enabled.OSCAR_DRY_RUN is True
+
+    disabled = _reload_config(monkeypatch, OSCAR_DRY_RUN="false")
+    assert disabled.OSCAR_DRY_RUN is False
 
 def test_require_api_key_raises_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     config = _reload_config(monkeypatch)

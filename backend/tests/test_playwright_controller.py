@@ -275,3 +275,75 @@ async def test_playwright_controller_close_dry_run_preserves_browser_session(
 
     assert context.closed is False
     assert controller._context is context
+
+
+@pytest.mark.anyio
+async def test_playwright_controller_get_tabs_dry_run_never_inspects_browser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from oscar import config
+
+    monkeypatch.setattr(config, "OSCAR_DRY_RUN", True)
+    monkeypatch.setattr(
+        "oscar.browser.playwright_controller.config.OSCAR_DRY_RUN", True
+    )
+    controller = PlaywrightController()
+
+    def forbidden_is_active():
+        raise AssertionError("browser state must not be inspected in dry-run mode")
+
+    monkeypatch.setattr(controller, "is_active", forbidden_is_active)
+    result = await controller.get_tabs()
+
+    assert result.success is True
+    assert result.action == "browser_get_tabs"
+    assert result.data["dry_run"] is True
+    assert result.data["execution_confirmed"] is False
+
+
+@pytest.mark.anyio
+async def test_playwright_controller_wait_for_text_dry_run_never_touches_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from oscar import config
+
+    monkeypatch.setattr(config, "OSCAR_DRY_RUN", True)
+    monkeypatch.setattr(
+        "oscar.browser.playwright_controller.config.OSCAR_DRY_RUN", True
+    )
+    controller = PlaywrightController()
+
+    async def forbidden_ensure_page(*args, **kwargs):
+        raise AssertionError("page must not be accessed in dry-run mode")
+
+    monkeypatch.setattr(controller, "_ensure_page", forbidden_ensure_page)
+    result = await controller.wait_for_text("Ready")
+
+    assert result.success is True
+    assert result.action == "browser_wait_for"
+    assert result.data["dry_run"] is True
+    assert result.data["execution_confirmed"] is False
+
+
+@pytest.mark.anyio
+async def test_playwright_controller_extract_dry_run_never_reads_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from oscar import config
+
+    monkeypatch.setattr(config, "OSCAR_DRY_RUN", True)
+    monkeypatch.setattr(
+        "oscar.browser.playwright_controller.config.OSCAR_DRY_RUN", True
+    )
+    controller = PlaywrightController()
+
+    async def forbidden_ensure_page(*args, **kwargs):
+        raise AssertionError("page must not be accessed in dry-run mode")
+
+    monkeypatch.setattr(controller, "_ensure_page", forbidden_ensure_page)
+    result = await controller.extract_main_content()
+
+    assert result.success is True
+    assert result.action == "browser_extract"
+    assert result.data["dry_run"] is True
+    assert result.data["execution_confirmed"] is False

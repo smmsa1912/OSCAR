@@ -165,6 +165,8 @@ class PlaywrightController:
     async def get_tabs(self) -> ActionResult:
         """Return a clean snapshot of currently open browser tabs."""
 
+        if config.OSCAR_DRY_RUN:
+            return self._dry_run_result("browser_get_tabs")
         if not self.is_active():
             return ActionResult(
                 success=True,
@@ -448,6 +450,8 @@ class PlaywrightController:
         *,
         selector_strategy: str | None = None,
     ) -> ActionResult:
+        if config.OSCAR_DRY_RUN:
+            return self._dry_run_result("browser_wait_for", text=text)
         try:
             await self._ensure_page()
             timeout_ms = int(config.PLAYWRIGHT_TIMEOUT_SECONDS * 1000)
@@ -488,6 +492,8 @@ class PlaywrightController:
             )
 
     async def extract_main_content(self) -> ActionResult:
+        if config.OSCAR_DRY_RUN:
+            return self._dry_run_result("browser_extract")
         try:
             await self._ensure_page()
             text = ""
