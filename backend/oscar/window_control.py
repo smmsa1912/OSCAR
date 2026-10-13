@@ -730,6 +730,11 @@ def focus_app_window(
 ) -> bool:
     """Bring a known application window to the foreground."""
 
+    # This low-level helper may be reached outside the main action executor.
+    # Never inspect or change desktop focus while dry-run is enabled.
+    if config.OSCAR_DRY_RUN:
+        return False
+
     spec = resolve_app_spec(app_name)
     policy = RetryPolicy(
         timeout_seconds=max(timeout, 0.0),

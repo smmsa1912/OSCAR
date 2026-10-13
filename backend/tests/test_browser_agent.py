@@ -463,3 +463,48 @@ async def test_direct_browser_methods_are_side_effect_free_in_dry_run(
     assert result.data["execution_confirmed"] is False
     assert result.data["would_execute"] == expected_action
     assert controller.calls == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("method_name", "kwargs", "expected_action"),
+    [
+        (
+            "_open_native_browser",
+            {"browser_name": "chrome", "profile_name": None, "url": "https://example.com"},
+            "browser_open",
+        ),
+        (
+            "_navigate_existing_native_browser",
+            {
+                "browser_name": "chrome",
+                "profile_name": None,
+                "url": "https://example.com",
+                "action_name": "browser_navigate",
+            },
+            "browser_navigate",
+        ),
+    ],
+)
+async def test_native_browser_helpers_are_side_effect_free_in_dry_run(
+    monkeypatch, method_name, kwargs, expected_action
+) -> None:
+    from oscar import config
+
+    monkeypatch.setattr(config, "OSCAR_DRY_RUN", True)
+    agent = BrowserAgent(controller=FakeController(), native_browser_enabled=True)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("native browser helper must not inspect or launch a browser in dry-run")
+
+    monkeypatch.setattr("oscar.agents.browser_agent.app_window_exists", forbidden)
+    monkeypatch.setattr("oscar.agents.browser_agent.focus_app_window", forbidden)
+    monkeypatch.setattr("oscar.agents.browser_agent.execute_action", forbidden)
+    monkeypatch.setattr("oscar.agents.browser_agent.validate_action", forbidden)
+
+    result = await getattr(agent, method_name)(**kwargs)
+
+    assert result.success is True
+    assert result.action == expected_action
+    assert result.data["dry_run"] is True
+    assert result.data["execution_confirmed"] is False

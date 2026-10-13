@@ -49,6 +49,25 @@ class UIAgent:
     """Last-resort UI automation path."""
 
     async def run(self, action: dict[str, Any]) -> ActionResult:
+        # Guard this route before normalization or verification. In particular,
+        # _verify_action may inspect/focus a window for open_app/focus_app even
+        # when the lower-level executor correctly returned a dry-run result.
+        if config.OSCAR_DRY_RUN:
+            action_name = str(action.get("action") or "ui_click")
+            return ActionResult(
+                success=True,
+                route="ui",
+                action=action_name,
+                confidence=1.0,
+                data={
+                    "dry_run": True,
+                    "execution_confirmed": False,
+                    "would_execute": action_name,
+                    "message": "Dry-run enabled; no UI action or verification was executed.",
+                },
+                retryable=False,
+            )
+
         normalized = self._normalize_action(action)
         fallback_action = self._coordinate_fallback_action(action, normalized)
 

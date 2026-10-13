@@ -109,6 +109,23 @@ class ContextUpdater:
         *,
         include_ui: bool = False,
     ) -> TaskContext:
+        # Dry-run must not inspect live desktop state. This protects more than
+        # action dispatch: context refreshes can otherwise query windows,
+        # capture screenshots, or enumerate UI controls before/after an action.
+        if config.OSCAR_DRY_RUN:
+            context.active_window_title = None
+            context.active_process_name = None
+            context.active_window_hwnd = None
+            context.system_specs = dict(self.system_specs or {})
+            context.current_local_time = datetime.now().astimezone().isoformat(
+                timespec="seconds"
+            )
+            context.visible_windows = []
+            context.screenshot = None
+            context.ui_controls = []
+            context.ui_element_summary = None
+            return context
+
         active_window = await anyio.to_thread.run_sync(get_active_window_info)
         if self.system_specs is None:
             self.system_specs = dict(await anyio.to_thread.run_sync(get_system_specs))
@@ -466,7 +483,10 @@ class Orchestrator:
                     trace_path=str(trace_path) if trace_path is not None else None,
                     memory=memory.get_recent_steps(config.MAX_STEPS),
                     known_paths=render_known_path_strings(),
-                    cursor_position=get_cursor_position(),  # sync is fine here — outside event loop
+                    # Cursor inspection reads live desktop state; skip it in dry-run.
+                    cursor_position=(
+                        None if config.OSCAR_DRY_RUN else get_cursor_position()
+                    ),
                     model_budget=token_usage_summary,
                 )
             except Exception as exc:
@@ -531,7 +551,9 @@ class Orchestrator:
         self,
         ui_callback: UIEventCallback | None,
     ) -> None:
-        if ui_callback is None:
+        # Restoring focus is a real desktop side effect. Do not do it in dry-run,
+        # even when a UI callback is attached.
+        if ui_callback is None or config.OSCAR_DRY_RUN:
             return
         try:
             await anyio.to_thread.run_sync(

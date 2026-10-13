@@ -192,3 +192,35 @@ async def test_ui_agent_grid_cell_overrides_semantic_window_controls(
         }
     ]
     assert result.success is True
+
+
+@pytest.mark.anyio
+async def test_ui_agent_dry_run_skips_execution_and_window_verification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from oscar import config
+
+    monkeypatch.setattr(config, "OSCAR_DRY_RUN", True)
+    monkeypatch.setattr("oscar.agents.ui_agent.config.OSCAR_DRY_RUN", True)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("dry-run must not execute or inspect desktop state")
+
+    monkeypatch.setattr("oscar.agents.ui_agent.execute_action", forbidden)
+    monkeypatch.setattr("oscar.agents.ui_agent.focus_app_window", forbidden)
+    monkeypatch.setattr("oscar.agents.ui_agent.app_window_exists", forbidden)
+    monkeypatch.setattr("oscar.agents.ui_agent.get_active_window_info", forbidden)
+
+    result = await UIAgent().run(
+        {
+            "action": "open_app",
+            "app_name": "notepad",
+            "reasoning": "Dry-run guard test.",
+            "task_complete": False,
+        }
+    )
+
+    assert result.success is True
+    assert result.data["dry_run"] is True
+    assert result.data["execution_confirmed"] is False
+    assert result.data["would_execute"] == "open_app"

@@ -688,6 +688,10 @@ class BrowserAgent:
         action_name: str = "browser_open",
         query: str | None = None,
     ) -> ActionResult:
+        if config.OSCAR_DRY_RUN:
+            return self._dry_run_result(
+                action_name, browser_name=browser_name, profile_name=profile_name, url=url, query=query
+            )
         resolved_browser = self._resolve_native_browser_name(browser_name)
         resolved_profile = profile_name or self._native_profile_name
         if (
@@ -864,6 +868,10 @@ class BrowserAgent:
         action_name: str,
         query: str | None = None,
     ) -> ActionResult:
+        if config.OSCAR_DRY_RUN:
+            return self._dry_run_result(
+                action_name, browser_name=browser_name, profile_name=profile_name, url=url, query=query
+            )
         action = {
             "action": "open_app",
             "app_name": browser_name,

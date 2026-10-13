@@ -7,6 +7,7 @@ import pytest
 from oscar import config
 from oscar.execution.files import execute_open_file, execute_save_file
 from oscar.execution.windows import execute_focus_app, execute_open_app, execute_window_hotkey_action
+from oscar import executor, window_control
 
 
 def test_open_file_dry_run_does_not_launch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -96,3 +97,35 @@ def test_window_hotkey_dry_run_does_not_focus_or_send_hotkey(monkeypatch: pytest
     )
     assert result["dry_run"] is True
     assert result["execution_confirmed"] is False
+
+
+def test_low_level_process_launcher_is_noop_in_dry_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "OSCAR_DRY_RUN", True)
+    monkeypatch.setattr(
+        executor.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail("Popen must not be called in dry-run"),
+    )
+
+    # Calling the private helper directly must not bypass the safety boundary.
+    executor._launch_process(["example-app"], error_message="launch failed")
+
+
+def test_low_level_window_focus_is_noop_in_dry_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "OSCAR_DRY_RUN", True)
+    monkeypatch.setattr(
+        window_control,
+        "resolve_app_spec",
+        lambda *_args, **_kwargs: pytest.fail("app resolution must not happen in dry-run"),
+    )
+    monkeypatch.setattr(
+        window_control,
+        "get_active_window_info",
+        lambda: pytest.fail("window inspection must not happen in dry-run"),
+    )
+
+    assert window_control.focus_app_window("notepad") is False

@@ -706,3 +706,112 @@ async def test_orchestrator_control_action_honors_dry_run(monkeypatch) -> None:
     assert result.data["dry_run"] is True
     assert result.data["execution_confirmed"] is False
     assert result.data["would_execute"] == "click"
+
+
+@pytest.mark.anyio
+async def test_orchestrator_dry_run_does_not_restore_desktop_focus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from oscar import config
+
+    monkeypatch.setattr(config, "OSCAR_DRY_RUN", True)
+    monkeypatch.setattr("oscar.orchestrator.config.OSCAR_DRY_RUN", True)
+
+    def forbidden_focus(*args, **kwargs):
+        raise AssertionError("dry-run must not change desktop focus")
+
+    monkeypatch.setattr("oscar.orchestrator.focus_oscar_app_window", forbidden_focus)
+
+    async def ui_callback(event: dict) -> None:
+        return None
+
+    await Orchestrator()._restore_ui_host_focus(ui_callback)
+
+
+@pytest.mark.anyio
+async def test_orchestrator_dry_run_skips_live_desktop_observation_and_focus(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """A dry-run task must not inspect or manipulate live desktop state."""
+    monkeypatch.setattr(orchestrator_module.config, "OSCAR_DRY_RUN", True)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("live desktop operation called during dry-run")
+
+    monkeypatch.setattr("oscar.orchestrator.get_active_window_info", forbidden)
+    monkeypatch.setattr("oscar.orchestrator.get_system_specs", forbidden)
+    monkeypatch.setattr("oscar.orchestrator.list_visible_windows", forbidden)
+    monkeypatch.setattr("oscar.orchestrator.capture_screenshot", forbidden)
+    monkeypatch.setattr("oscar.orchestrator.capture_active_window_controls", forbidden)
+    monkeypatch.setattr("oscar.orchestrator.get_cursor_position", forbidden)
+    monkeypatch.setattr("oscar.orchestrator.focus_oscar_app_window", forbidden)
+    monkeypatch.setattr(
+        "oscar.orchestrator.write_run_log",
+        lambda **_kwargs: tmp_path / "run.json",
+    )
+    monkeypatch.setattr(
+        "oscar.trace.ExecutionTrace.write_json",
+        lambda self, logs_dir=None: tmp_path / "trace.json",
+    )
+
+    class FakePersistentMemory:
+        def snapshot(self):
+            return {"recent_apps": [], "recent_paths": [], "recent_actions": []}
+
+        def record(self, *_args, **_kwargs):
+            return None
+
+        def save(self):
+            return None
+
+    monkeypatch.setattr(
+        "oscar.orchestrator.PersistentMemoryStore.load",
+        lambda: FakePersistentMemory(),
+    )
+
+    class DonePlanner:
+        async def plan_next_action(self, context, memory):
+            return {"action": "done", "reasoning": "Dry-run audit complete.", "task_complete": True}
+
+    async def ui_callback(_event: dict) -> None:
+        return None
+
+    outcome = await Orchestrator(
+        planner=DonePlanner(),
+        router=FakeRouter(),
+        retry_manager=FakeRetryManager(),
+        context_updater=ContextUpdater(),
+    ).run("dry-run safety integration test", ui_callback=ui_callback)
+
+    assert outcome.status == "completed"
+    assert outcome.log_path == tmp_path / "run.json"
+    assert outcome.trace_path == tmp_path / "trace.json"
+
+
+@pytest.mark.anyio
+async def test_context_updater_dry_run_does_not_capture_live_desktop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(orchestrator_module.config, "OSCAR_DRY_RUN", True)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("desktop observation called during dry-run")
+
+    monkeypatch.setattr("oscar.orchestrator.get_active_window_info", forbidden)
+    monkeypatch.setattr("oscar.orchestrator.get_system_specs", forbidden)
+    monkeypatch.setattr("oscar.orchestrator.list_visible_windows", forbidden)
+    monkeypatch.setattr("oscar.orchestrator.capture_screenshot", forbidden)
+    monkeypatch.setattr("oscar.orchestrator.capture_active_window_controls", forbidden)
+
+    context = TaskContext(
+        task="dry-run context refresh",
+        current_working_directory=".",
+    )
+    updated = await ContextUpdater().refresh_environment(context, include_ui=True)
+
+    assert updated.active_window_title is None
+    assert updated.active_process_name is None
+    assert updated.active_window_hwnd is None
+    assert updated.visible_windows == []
+    assert updated.screenshot is None
+    assert updated.ui_controls == []

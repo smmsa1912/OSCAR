@@ -286,6 +286,10 @@ def _is_close_tab_hotkey(keys: list[str]) -> bool:
 
 
 def _launch_process(command: list[str], *, error_message: str) -> None:
+    # Defense in depth: this helper can be injected into execution helpers, so
+    # enforce dry-run here as well as at the public action-dispatch boundary.
+    if config.OSCAR_DRY_RUN:
+        return
     try:
         subprocess.Popen(
             command,
