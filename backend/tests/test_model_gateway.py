@@ -194,7 +194,7 @@ def test_omniroute_preserves_token_budget_error_and_does_not_fallback(
     def exhausted(*_args, **_kwargs):
         seen.append("request")
         raise TokenBudgetExceeded(
-            "Today's configured OmniRoute token budget would be exceeded."
+            "Today's shared model-token budget would be exceeded."
         )
 
     monkeypatch.setattr(config, "OMNIROUTE_MODEL", "default-model")

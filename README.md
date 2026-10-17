@@ -102,24 +102,24 @@ python -m pip install -r backend\requirements.txt
 Copy-Item backend\.env.example backend\.env
 ```
 
-Open `backend/.env` and configure the selected provider. The default `LLM_PROVIDER=gemini` requires `GEMINI_API_KEY`. Keep API keys private, and never commit your populated `.env` file.
+Open `backend/.env` and configure the selected provider. The default `LLM_PROVIDER=gemini` requires `GEMINI_API_KEY`. The sample enables dry-run mode (`OSCAR_DRY_RUN=true`); keep it on while validating the workflow, and set it to `false` only when you are ready to allow live actions. Dry-run protections are defense-in-depth, not a complete security sandbox. Keep API keys private, and never commit your populated `.env` file.
 
 
 ### Model provider configuration
 
-OSCAR uses a provider-neutral action-model interface while preserving the same planner action dictionary and screenshot/prompt contract. `LLM_PROVIDER=gemini` is the default; use `LLM_PROVIDER=omniroute` to route requests to an OpenAI-compatible OmniRoute gateway. Provider switching is explicit—OSCAR does not silently switch between Gemini and OmniRoute during a task. When OmniRoute is selected, optional role-specific model IDs support automatic model routing within the OmniRoute gateway.
+OSCAR uses a provider-neutral action-model interface while preserving the same planner action dictionary and screenshot/prompt contract. `LLM_PROVIDER=gemini` is the default; use `LLM_PROVIDER=omniroute` for an OmniRoute gateway or `LLM_PROVIDER=freellmapi` for a FreeLLMAPI OpenAI-compatible endpoint. Provider switching is explicit—OSCAR does not silently switch providers during a task. When OmniRoute is selected, optional role-specific model IDs support automatic model routing within that gateway.
 
 For OmniRoute, set these values in `backend/.env`:
 
 ```dotenv
 LLM_PROVIDER=omniroute
-OMNIROUTE_BASE_URL=http://localhost:8080/v1
+OMNIROUTE_BASE_URL=http://localhost:20128/v1
 OMNIROUTE_API_KEY=
 OMNIROUTE_MODEL=auto/best-fast
 OMNIROUTE_AUTO_ROUTING=true
 OMNIROUTE_MODEL_FAST=auto/best-fast
 OMNIROUTE_MODEL_REASONING=auto/best-reasoning
-OMNIROUTE_MODEL_VISION=auto/best-vision
+OMNIROUTE_MODEL_VISION=auto/vision
 OMNIROUTE_MODEL_FALLBACK=auto/best-fast
 OMNIROUTE_TIMEOUT_SECONDS=45
 OMNIROUTE_MAX_PROMPT_CHARS=7000
@@ -130,9 +130,11 @@ OMNIROUTE_MAX_DAILY_TOKENS=30000
 OMNIROUTE_MAX_IMAGE_DIMENSION=1024
 ```
 
-Gemini remains selected by default. The `auto/best-fast`, `auto/best-reasoning`, and `auto/best-vision` aliases above were present in the model list returned by the user's local OmniRoute `/models` endpoint; the names are routing hints, not guarantees about model quality or capabilities. The gateway must expose `/chat/completions` and `/models` under the configured API prefix and accept JSON-object response mode. Screenshot routing requires image-input support, so test it before using OmniRoute for desktop tasks. A configured `OMNIROUTE_MODEL_FALLBACK` is attempted once only after a transient error.
+Gemini remains selected by default. The OmniRoute model IDs in these examples are routing aliases and may vary by gateway; check your configured `/models` endpoint and replace them with IDs it actually exposes. The gateway must expose `/chat/completions` and `/models` under the configured API prefix and accept JSON-object response mode. Screenshot routing requires image-input support, so test it before using OmniRoute for desktop tasks. A configured `OMNIROUTE_MODEL_FALLBACK` is attempted once only after a transient error.
 
-**Token/cost guardrails:** OSCAR bounds prompt text to 7,000 characters, sets a 350-token output ceiling per request, estimates request size before sending, downsizes screenshots to at most 1,024 pixels on the longest side and JPEG-compresses them, and reserves a default 20,000 estimated-token budget per task plus a persistent 30,000 estimated-token daily budget across OSCAR restarts. If either budget would be exceeded, it blocks the next request; when a task hits its budget, the planner stops instead of repeatedly calling the cloud. Daily reservations are stored in `.oscar/omniroute_token_usage.json` and reset by local calendar date. If the gateway returns `usage.total_tokens`, OSCAR reconciles the estimate with that usage; otherwise it keeps the conservative reservation. These estimates are not exact billing counts and do not enforce a provider-side dollar or monthly account quota. You can lower the limits further to save tokens. `OMNIROUTE_API_KEY` is optional for a local unauthenticated gateway. Gemini uses `GEMINI_TIMEOUT_SECONDS`; OmniRoute uses `OMNIROUTE_TIMEOUT_SECONDS`.
+For FreeLLMAPI, set `LLM_PROVIDER=freellmapi` and configure `FREELLMAPI_BASE_URL`, `FREELLMAPI_MODEL`, and optional `FREELLMAPI_API_KEY`. The default local endpoint is `http://127.0.0.1:31415/v1`. Its `FREELLMAPI_MAX_PROMPT_CHARS`, `FREELLMAPI_MAX_OUTPUT_TOKENS`, `FREELLMAPI_MAX_REQUEST_TOKENS`, and `FREELLMAPI_MAX_IMAGE_DIMENSION` settings are independent from the matching OmniRoute per-request settings. The task and daily estimated-token guardrails are shared across these OpenAI-compatible providers so switching providers does not reset OSCAR's local guardrail.
+
+**Token/cost guardrails:** Each OpenAI-compatible provider has its own prompt, output, request-size, and image-dimension settings; see the provider-specific variables above and in `backend/.env.example`. The estimated-token task and daily budgets are shared across OmniRoute and FreeLLMAPI, so switching between these providers does not reset the guardrails. The defaults are 20,000 estimated tokens per task and 30,000 per local calendar day. If either budget would be exceeded, OSCAR blocks the next request; when a task hits its budget, the planner stops instead of repeatedly calling the gateway. Daily reservations are stored in the backwards-compatible file `.oscar/omniroute_token_usage.json`. If a gateway returns `usage.total_tokens`, OSCAR reconciles the estimate with that usage; otherwise it retains the conservative reservation. These estimates are not exact billing counts and do not enforce a provider-side dollar or monthly account quota. You can lower the limits further. `OMNIROUTE_API_KEY` and `FREELLMAPI_API_KEY` are optional for local unauthenticated endpoints. Gemini uses `GEMINI_TIMEOUT_SECONDS`; OmniRoute uses `OMNIROUTE_TIMEOUT_SECONDS`; FreeLLMAPI uses `FREELLMAPI_TIMEOUT_SECONDS`.
 
 To inspect the model IDs exposed by the configured OmniRoute gateway, run this from the `backend` directory after setting the environment:
 

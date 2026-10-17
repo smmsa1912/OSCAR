@@ -146,3 +146,48 @@ async def test_orchestrator_routes_actions_without_side_effects_in_dry_run(
     assert step_result["success"] is True
     assert result_payload["data"]["dry_run"] is True
     assert result_payload["data"]["execution_confirmed"] is False
+
+
+@pytest.mark.anyio
+async def test_orchestrator_stops_as_failed_when_planner_requests_stop(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(config, "OSCAR_DRY_RUN", True)
+    monkeypatch.setattr(
+        "oscar.orchestrator.PersistentMemoryStore.load", lambda: _Memory()
+    )
+    monkeypatch.setattr(
+        "oscar.orchestrator.write_run_log", lambda **_kwargs: tmp_path / "run.json"
+    )
+    monkeypatch.setattr(
+        "oscar.trace.ExecutionTrace.write_json",
+        lambda self, logs_dir=None: tmp_path / "trace.json",
+    )
+
+    class StopPlanner:
+        async def plan_next_action(self, _context, _memory):
+            return {
+                "action": "done",
+                "reasoning": "Stopped after repeated model errors.",
+                "task_complete": False,
+                "stop_execution": True,
+                "failure_reason": "repeated_model_errors",
+            }
+
+    events: list[dict[str, Any]] = []
+
+    async def ui_callback(event: dict[str, Any]) -> None:
+        events.append(event)
+
+    outcome = await Orchestrator(
+        planner=StopPlanner(), router=ActionRouter(), context_updater=ContextUpdater()
+    ).run("test planner stop handling", ui_callback=ui_callback)
+
+    assert outcome.status == "failed"
+    assert outcome.final_message == "Stopped after repeated model errors."
+    assert any(
+        event.get("type") == "task_stopped"
+        and event.get("failure_reason") == "repeated_model_errors"
+        for event in events
+    )
+    assert not any(event.get("type") == "task_completed" for event in events)

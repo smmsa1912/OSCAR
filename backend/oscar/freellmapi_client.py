@@ -55,7 +55,7 @@ def _image_data_url(image: Any) -> str | None:
         if hasattr(image, "size") and hasattr(image, "convert"):
             prepared = image.convert("RGB")
             prepared.thumbnail(
-                (config.OMNIROUTE_MAX_IMAGE_DIMENSION, config.OMNIROUTE_MAX_IMAGE_DIMENSION)
+                (config.FREELLMAPI_MAX_IMAGE_DIMENSION, config.FREELLMAPI_MAX_IMAGE_DIMENSION)
             )
             buffer = io.BytesIO()
             prepared.save(buffer, format="JPEG", quality=75, optimize=True)
@@ -74,7 +74,7 @@ def _bounded_prompt(prompt: str) -> str:
     limit = config.FREELLMAPI_MAX_PROMPT_CHARS
     if len(prompt) <= limit:
         return prompt
-    marker = "\\n[Earlier context omitted to respect OSCAR's prompt-size limit.]\\n"
+    marker = "\n[Earlier context omitted to respect OSCAR's prompt-size limit.]\n"
     available = max(0, limit - len(marker))
     head = int(available * 0.55)
     tail = available - head
@@ -177,10 +177,10 @@ def ask_freellmapi(
             {"type": "text", "text": bounded_prompt},
             {"type": "image_url", "image_url": {"url": image_url}},
         ]
-    system_prompt = SYSTEM_PROMPT + "\\nReturn exactly one JSON object."
+    system_prompt = SYSTEM_PROMPT + "\nReturn exactly one JSON object."
     image_tokens = 1200 if image_url else 0
     estimated_input = estimate_text_tokens(system_prompt + bounded_prompt) + image_tokens
-    estimated_request = estimated_input + config.OMNIROUTE_MAX_OUTPUT_TOKENS
+    estimated_request = estimated_input + config.FREELLMAPI_MAX_OUTPUT_TOKENS
     if estimated_request > config.FREELLMAPI_MAX_REQUEST_TOKENS:
         raise FreeLLMAPIResponseError(
             f"OSCAR blocked this FreeLLMAPI request: estimated size {estimated_request} "
@@ -188,10 +188,7 @@ def ask_freellmapi(
             f"({config.FREELLMAPI_MAX_REQUEST_TOKENS}). Reduce prompt/image size or adjust "
             "the FreeLLMAPI request cap if appropriate."
         )
-    reservation = reserve_request(
-        estimated_input,
-        config.OMNIROUTE_MAX_OUTPUT_TOKENS,
-    )
+    endpoint = _endpoint(config.FREELLMAPI_BASE_URL, "/chat/completions")
     payload = {
         "model": model,
         "messages": [
@@ -199,10 +196,13 @@ def ask_freellmapi(
             {"role": "user", "content": user_content},
         ],
         "temperature": 0.2,
-        "max_tokens": config.OMNIROUTE_MAX_OUTPUT_TOKENS,
+        "max_tokens": config.FREELLMAPI_MAX_OUTPUT_TOKENS,
         "response_format": {"type": "json_object"},
     }
-    endpoint = _endpoint(config.FREELLMAPI_BASE_URL, "/chat/completions")
+    reservation = reserve_request(
+        estimated_input,
+        config.FREELLMAPI_MAX_OUTPUT_TOKENS,
+    )
     try:
         body = _request_json(endpoint, method="POST", payload=payload, timeout=timeout)
     except Exception:

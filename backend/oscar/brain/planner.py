@@ -66,6 +66,7 @@ class ModelBrain:
             default_model = config.GEMINI_MODEL
         self.prompt_builder = prompt_builder
         self.model_name = model_name or default_model
+        self._consecutive_planning_errors = 0
 
     async def plan_next_action(
         self,
@@ -74,6 +75,7 @@ class ModelBrain:
     ) -> dict[str, Any]:
         direct = self._direct_context_answer(context, memory)
         if direct is not None:
+            self._consecutive_planning_errors = 0
             return direct
 
         prompt = self._build_prompt(context, memory)
@@ -102,6 +104,7 @@ class ModelBrain:
                 revised_action=action.get("action"),
             )
 
+        self._consecutive_planning_errors = 0
         return action
 
     def _build_prompt(self, context: TaskContext, memory: TaskMemory) -> str:
@@ -155,16 +158,30 @@ class ModelBrain:
             exc,
             exc_info=isinstance(exc, (GeminiResponseError, json.JSONDecodeError, ValueError)),
         )
+        self._consecutive_planning_errors += 1
         safe_error = str(exc).lower()
         if "token budget" in safe_error or "estimated size exceeds" in safe_error:
             return {
                 "action": "done",
                 "reasoning": (
-                    "Stopped before another cloud request to respect OSCAR's configured "
-                    "token budget. Reduce task scope or adjust the OmniRoute budget settings "
-                    "if more steps are necessary."
+                    "OSCAR stopped before another model request because the configured "
+                    "token budget was reached. Reduce task scope or adjust the shared model "
+                    "budget settings before retrying."
                 ),
-                "task_complete": True,
+                "task_complete": False,
+                "stop_execution": True,
+                "failure_reason": "model_token_budget_exceeded",
+            }
+        if self._consecutive_planning_errors >= 2:
+            return {
+                "action": "done",
+                "reasoning": (
+                    "OSCAR stopped after repeated model/planning errors instead of continuing "
+                    "to retry. Verify the selected provider and endpoint, then review local logs."
+                ),
+                "task_complete": False,
+                "stop_execution": True,
+                "failure_reason": "repeated_model_errors",
             }
         return {
             "action": "wait",

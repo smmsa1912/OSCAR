@@ -399,7 +399,8 @@ def test_planner_stops_task_when_token_budget_is_exhausted() -> None:
         RuntimeError("OSCAR stopped before the model request because this task reached its configured token budget")
     )
     assert action["action"] == "done"
-    assert action["task_complete"] is True
+    assert action["stop_execution"] is True
+    assert action["task_complete"] is False
     assert "token budget" in action["reasoning"]
 
 
@@ -414,7 +415,7 @@ async def test_omniroute_token_budget_error_stops_planning_without_retry() -> No
 
         def generate_action(self, *_args, **_kwargs):
             raise TokenBudgetExceeded(
-                "Today's configured OmniRoute token budget would be exceeded."
+                "Today's shared model-token budget would be exceeded."
             )
 
     planner = ModelBrain(provider=ExhaustedProvider())
@@ -423,5 +424,27 @@ async def test_omniroute_token_budget_error_stops_planning_without_retry() -> No
         TaskMemory(),
     )
     assert action["action"] == "done"
-    assert action["task_complete"] is True
+    assert action["stop_execution"] is True
+    assert action["task_complete"] is False
     assert "token budget" in action["reasoning"].lower()
+
+
+@pytest.mark.anyio
+async def test_planner_stops_after_two_consecutive_model_errors() -> None:
+    calls = 0
+
+    def broken_model(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("provider unavailable")
+
+    planner = GeminiBrain(ask_model=broken_model)
+    first = await planner.plan_next_action(_context("open notepad"), TaskMemory())
+    second = await planner.plan_next_action(_context("open notepad"), TaskMemory())
+
+    assert first["action"] == "wait"
+    assert second["action"] == "done"
+    assert second["stop_execution"] is True
+    assert second["failure_reason"] == "repeated_model_errors"
+    assert second["task_complete"] is False
+    assert calls == 2

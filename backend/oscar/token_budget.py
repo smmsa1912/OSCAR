@@ -118,8 +118,8 @@ def _reserve_daily_tokens(amount: int) -> None:
         limit = config.OMNIROUTE_MAX_DAILY_TOKENS
         if used + amount > limit:
             raise TokenBudgetExceeded(
-                "OSCAR blocked the cloud request because today's configured OmniRoute "
-                f"token budget ({limit} estimated tokens) would be exceeded."
+                "OSCAR blocked the cloud request because today's shared model-token "
+                f"budget ({limit} estimated tokens) would be exceeded."
             )
         record["estimated_tokens"] = used + amount
         record["request_count"] = int(record.get("request_count", 0)) + 1

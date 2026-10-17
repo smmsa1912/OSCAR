@@ -48,6 +48,7 @@ def _reload_config(monkeypatch: pytest.MonkeyPatch, **env: str):
         "PLAYWRIGHT_TIMEOUT_SECONDS",
         "PLAYWRIGHT_MANAGED_PROFILE_DIR",
         "OSCAR_LOG_LEVEL",
+        "OSCAR_LOGS_DIR", "PLAYWRIGHT_STATE_DIR", "OSCAR_STATE_DIR",
         "OSCAR_DRY_RUN",
         "RETRY_INITIAL_INTERVAL_SECONDS",
         "RETRY_MAX_INTERVAL_SECONDS",
@@ -74,6 +75,10 @@ def test_config_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config.GEMINI_MODEL == "gemini-2.5-flash"
     assert config.LLM_PROVIDER == "gemini"
     assert config.GEMINI_TIMEOUT_SECONDS == 60.0
+    assert config.FREELLMAPI_MAX_PROMPT_CHARS == 5000
+    assert config.FREELLMAPI_MAX_OUTPUT_TOKENS == 350
+    assert config.FREELLMAPI_MAX_REQUEST_TOKENS == 8000
+    assert config.FREELLMAPI_MAX_IMAGE_DIMENSION == 1024
     assert config.OMNIROUTE_BASE_URL == "http://localhost:8080/v1"
     assert config.OMNIROUTE_API_KEY == ""
     assert config.OMNIROUTE_MODEL == "auto/best-fast"
@@ -245,3 +250,24 @@ def test_config_rejects_retry_max_below_initial(monkeypatch: pytest.MonkeyPatch)
 def test_config_rejects_unknown_llm_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(ValueError, match="LLM_PROVIDER must be one of"):
         _reload_config(monkeypatch, LLM_PROVIDER="unknown-provider")
+
+
+def test_path_overrides_are_loaded_and_blank_values_fall_back(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    configured = _reload_config(
+        monkeypatch,
+        OSCAR_STATE_DIR=str(tmp_path / "state"),
+        OSCAR_LOGS_DIR=str(tmp_path / "logs"),
+        PLAYWRIGHT_STATE_DIR=str(tmp_path / "playwright"),
+        PLAYWRIGHT_MANAGED_PROFILE_DIR="",
+    )
+
+    assert configured.STATE_DIR == tmp_path / "state"
+    assert configured.LOGS_DIR == tmp_path / "logs"
+    assert configured.PLAYWRIGHT_STATE_DIR == tmp_path / "playwright"
+    assert configured.PLAYWRIGHT_MANAGED_PROFILE_DIR == tmp_path / "playwright" / "managed-profile"
+
+    defaults = _reload_config(monkeypatch)
+    assert defaults.STATE_DIR == defaults.ROOT_DIR / ".oscar"
+    assert defaults.LOGS_DIR == defaults.ROOT_DIR / "logs"
+    assert defaults.PLAYWRIGHT_STATE_DIR == defaults.ROOT_DIR / ".playwright"
+    assert defaults.PLAYWRIGHT_MANAGED_PROFILE_DIR == defaults.ROOT_DIR / ".playwright" / "managed-profile"

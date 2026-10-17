@@ -70,7 +70,7 @@ def test_daily_budget_persists_across_task_contexts(
 
     second = begin_task_budget(1000)
     try:
-        with pytest.raises(TokenBudgetExceeded, match="today's configured OmniRoute token budget"):
+        with pytest.raises(TokenBudgetExceeded, match="today's shared model-token budget"):
             reserve_request(30, 20)
     finally:
         end_task_budget(second)

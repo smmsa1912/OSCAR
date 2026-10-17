@@ -18,17 +18,21 @@ except ImportError:  # pragma: no cover - fallback for limited environments
 ROOT_DIR = Path(__file__).resolve().parent.parent
 PROJECT_ROOT = ROOT_DIR  # Portable alias for cross-machine path resolution
 ENV_FILE = ROOT_DIR / ".env"
-LOGS_DIR = Path(os.path.expandvars(os.getenv("OSCAR_LOGS_DIR", str(ROOT_DIR / "logs")))).expanduser()
+
+# Load .env before resolving path overrides so path settings behave like the
+# other configuration values below. Real process environment values still win.
+load_dotenv(ENV_FILE)
+
+LOGS_DIR = Path(
+    os.path.expandvars(os.getenv("OSCAR_LOGS_DIR", "").strip() or str(ROOT_DIR / "logs"))
+).expanduser()
 PLAYWRIGHT_STATE_DIR = Path(
-    os.path.expandvars(os.getenv("PLAYWRIGHT_STATE_DIR", str(ROOT_DIR / ".playwright")))
+    os.path.expandvars(os.getenv("PLAYWRIGHT_STATE_DIR", "").strip() or str(ROOT_DIR / ".playwright"))
 ).expanduser()
 STATE_DIR = Path(
-    os.path.expandvars(os.getenv("OSCAR_STATE_DIR", str(ROOT_DIR / ".oscar")))
+    os.path.expandvars(os.getenv("OSCAR_STATE_DIR", "").strip() or str(ROOT_DIR / ".oscar"))
 ).expanduser()
 SESSION_MEMORY_PATH = STATE_DIR / "session_memory.json"
-
-
-load_dotenv(ENV_FILE)
 
 
 def _raw_value(name: str) -> str | None:
@@ -180,15 +184,21 @@ FREELLMAPI_TIMEOUT_SECONDS = _parse_float(
 FREELLMAPI_MAX_PROMPT_CHARS = _parse_int(
     "FREELLMAPI_MAX_PROMPT_CHARS", 5000, minimum=1000, maximum=100000
 )
+FREELLMAPI_MAX_OUTPUT_TOKENS = _parse_int(
+    "FREELLMAPI_MAX_OUTPUT_TOKENS", 350, minimum=64, maximum=8192
+)
 FREELLMAPI_MAX_REQUEST_TOKENS = _parse_int(
     "FREELLMAPI_MAX_REQUEST_TOKENS", 8000, minimum=512, maximum=32000
+)
+FREELLMAPI_MAX_IMAGE_DIMENSION = _parse_int(
+    "FREELLMAPI_MAX_IMAGE_DIMENSION", 1024, minimum=256, maximum=4096
 )
 OMNIROUTE_BASE_URL = (
     os.getenv("OMNIROUTE_BASE_URL", "").strip().rstrip("/")
     or "http://localhost:8080/v1"
 )
 OMNIROUTE_API_KEY = os.getenv("OMNIROUTE_API_KEY", "").strip()
-# OmniRoute's auto/* IDs were confirmed from the user's local /models response.
+# These gateway-specific presets may need changing to IDs exposed by /models.
 # Gemini remains the global default; these only apply when OmniRoute is selected.
 OMNIROUTE_MODEL = os.getenv("OMNIROUTE_MODEL", "auto/best-fast").strip() or "auto/best-fast"
 OMNIROUTE_AUTO_ROUTING = _parse_bool("OMNIROUTE_AUTO_ROUTING", True)
@@ -252,10 +262,8 @@ if RETRY_MAX_INTERVAL_SECONDS < RETRY_INITIAL_INTERVAL_SECONDS:
     )
 PLAYWRIGHT_MANAGED_PROFILE_DIR = Path(
     os.path.expandvars(
-        os.getenv(
-            "PLAYWRIGHT_MANAGED_PROFILE_DIR",
-            str(PLAYWRIGHT_STATE_DIR / "managed-profile"),
-        )
+        os.getenv("PLAYWRIGHT_MANAGED_PROFILE_DIR", "").strip()
+        or str(PLAYWRIGHT_STATE_DIR / "managed-profile")
     )
 ).expanduser()
 NATIVE_BROWSER_ENABLED = _parse_bool("NATIVE_BROWSER_ENABLED", True)

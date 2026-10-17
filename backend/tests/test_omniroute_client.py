@@ -164,6 +164,8 @@ def test_prompt_is_bounded_and_keeps_recent_context(monkeypatch: pytest.MonkeyPa
     assert bounded.startswith("BEGIN")
     assert bounded.endswith("RECENT-CONTEXT")
     assert "Earlier context omitted" in bounded
+    assert "\n[Earlier context omitted" in bounded
+    assert "\\n[Earlier context omitted" not in bounded
 
 
 def test_request_sets_output_token_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:

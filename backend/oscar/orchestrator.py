@@ -230,11 +230,29 @@ class Orchestrator:
                     ui_callback,
                     "planner_reasoning",
                     step=step_number,
-                    status="planned",
+                    status="stopped" if planned_action.get("stop_execution") else "planned",
                     action=planned_action.get("action"),
                     reasoning=planned_action.get("reasoning"),
                     payload=planned_action,
                 )
+                if planned_action.get("stop_execution"):
+                    status = "failed"
+                    final_message = str(planned_action.get("reasoning") or "OSCAR stopped.").strip()
+                    error_message = str(
+                        planned_action.get("failure_reason") or "planner_stop_requested"
+                    )
+                    history.append(dict(planned_action))
+                    await self._emit_ui_event(
+                        ui_callback,
+                        "task_stopped",
+                        step=step_number,
+                        status=status,
+                        action=planned_action.get("action"),
+                        reasoning=final_message,
+                        success=False,
+                        failure_reason=error_message,
+                    )
+                    break
                 action = (
                     self.router.prepare_action(planned_action, context)
                     if hasattr(self.router, "prepare_action")
