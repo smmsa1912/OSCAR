@@ -71,7 +71,7 @@ def _image_data_url(image: Any) -> str | None:
 
 def _bounded_prompt(prompt: str) -> str:
     """Bound prompt size while retaining task instructions and recent context."""
-    limit = config.OMNIROUTE_MAX_PROMPT_CHARS
+    limit = config.FREELLMAPI_MAX_PROMPT_CHARS
     if len(prompt) <= limit:
         return prompt
     marker = "\\n[Earlier context omitted to respect OSCAR's prompt-size limit.]\\n"
@@ -181,10 +181,12 @@ def ask_freellmapi(
     image_tokens = 1200 if image_url else 0
     estimated_input = estimate_text_tokens(system_prompt + bounded_prompt) + image_tokens
     estimated_request = estimated_input + config.OMNIROUTE_MAX_OUTPUT_TOKENS
-    if estimated_request > config.OMNIROUTE_MAX_REQUEST_TOKENS:
+    if estimated_request > config.FREELLMAPI_MAX_REQUEST_TOKENS:
         raise FreeLLMAPIResponseError(
-            "OSCAR blocked this model request because its estimated size exceeds "
-            "FREELLMAPI_MAX_REQUEST_TOKENS. Reduce the prompt/image limits or raise the cap."
+            f"OSCAR blocked this FreeLLMAPI request: estimated size {estimated_request} "
+            f"tokens exceeds FREELLMAPI_MAX_REQUEST_TOKENS "
+            f"({config.FREELLMAPI_MAX_REQUEST_TOKENS}). Reduce prompt/image size or adjust "
+            "the FreeLLMAPI request cap if appropriate."
         )
     reservation = reserve_request(
         estimated_input,

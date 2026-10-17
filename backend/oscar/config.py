@@ -174,6 +174,15 @@ FREELLMAPI_VISION_MODEL = os.getenv("FREELLMAPI_VISION_MODEL", "auto").strip() o
 FREELLMAPI_TIMEOUT_SECONDS = _parse_float(
     "FREELLMAPI_TIMEOUT_SECONDS", 45.0, minimum=0.1, maximum=600
 )
+# Keep FreeLLMAPI request sizing independent from the similarly named OmniRoute
+# controls. The full shared system prompt is large, so its cap must account for
+# system instructions, bounded task context, optional screenshot, and output.
+FREELLMAPI_MAX_PROMPT_CHARS = _parse_int(
+    "FREELLMAPI_MAX_PROMPT_CHARS", 5000, minimum=1000, maximum=100000
+)
+FREELLMAPI_MAX_REQUEST_TOKENS = _parse_int(
+    "FREELLMAPI_MAX_REQUEST_TOKENS", 8000, minimum=512, maximum=32000
+)
 OMNIROUTE_BASE_URL = (
     os.getenv("OMNIROUTE_BASE_URL", "").strip().rstrip("/")
     or "http://localhost:8080/v1"
